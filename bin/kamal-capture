@@ -322,6 +322,9 @@ capture_ble() {
 
     start_ns="$(date +%s%N)"
 
+    local start_time
+    start_time="$(date --iso-8601=seconds)"
+
     if [[ -n "$duration" ]]; then
 
         set +e
@@ -347,6 +350,8 @@ capture_ble() {
     fi
 
     end_ns="$(date +%s%N)"
+    local end_time
+    end_time="$(date --iso-8601=seconds)"
 
     wall_duration="$(
         awk \

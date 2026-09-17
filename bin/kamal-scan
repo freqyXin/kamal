@@ -9,7 +9,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-VERSION = '0.2.0'
+VERSION = '0.3.0'
 FIELDS = {
     'frame': 'frame.number',
     'nordic_crcok': 'nordic_ble.crcok',
@@ -42,6 +42,7 @@ def main():
     ble = sub.add_parser('ble', help='inventory BLE advertisements from PCAP')
     ble.add_argument('--input', required=True, type=Path, help='existing .pcap/.pcapng file')
     ble.add_argument('--json', type=Path, help='write JSON inventory to this path (no overwrite)')
+    ble.add_argument('--csv', type=Path, help='write CSV inventory to this path (no overwrite)')
     display = ble.add_mutually_exclusive_group()
     display.add_argument('--all', action='store_true', help='display every advertiser')
     display.add_argument('--limit', type=int, metavar='N',
@@ -56,6 +57,8 @@ def main():
         p.error(f'PCAP not found: {args.input}')
     if args.json and args.json.exists():
         p.error(f'refusing to overwrite: {args.json}')
+    if args.csv and args.csv.exists():
+        p.error(f'refusing to overwrite: {args.csv}')
     cmd = ['tshark', '-r', str(args.input), '-Y', 'btle.advertising_address', '-T', 'fields',
            '-E', 'separator=/t', '-E', 'occurrence=a', '-E', 'aggregator=|']
     for field in FIELDS.values():
@@ -161,6 +164,50 @@ def main():
 
     for warning in warnings:
         print(f'WARNING: {warning}', file=sys.stderr)
+    if args.csv:
+        fieldnames = [
+            'address',
+            'address_type',
+            'packet_count',
+            'rssi_min_dbm',
+            'rssi_max_dbm',
+            'rssi_avg_dbm',
+            'rssi_samples',
+            'names',
+            'service_uuids_16',
+            'service_uuids_32',
+            'service_uuids_128',
+            'channels',
+            'pdu_types',
+        ]
+
+        try:
+            with args.csv.open('x', encoding='utf-8', newline='') as output:
+                writer = csv.DictWriter(output, fieldnames=fieldnames)
+                writer.writeheader()
+
+                for d in devices:
+                    rssi = d['rssi_dbm'] or {}
+                    writer.writerow({
+                        'address': d['address'],
+                        'address_type': d['address_type'],
+                        'packet_count': d['packet_count'],
+                        'rssi_min_dbm': rssi.get('min', ''),
+                        'rssi_max_dbm': rssi.get('max', ''),
+                        'rssi_avg_dbm': rssi.get('average', ''),
+                        'rssi_samples': rssi.get('samples', ''),
+                        'names': ';'.join(d['names']),
+                        'service_uuids_16': ';'.join(d['service_uuids_16']),
+                        'service_uuids_32': ';'.join(d['service_uuids_32']),
+                        'service_uuids_128': ';'.join(d['service_uuids_128']),
+                        'channels': ';'.join(d['channels']),
+                        'pdu_types': ';'.join(d['pdu_types']),
+                    })
+        except OSError as exc:
+            p.error(f'cannot write CSV: {exc}')
+
+        print(f'CSV: {args.csv}')
+
     if args.json:
         try:
             with args.json.open('x', encoding='utf-8') as output:

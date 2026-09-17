@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+
+import argparse
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from bleak import BleakClient, BleakScanner
+
+from kamal.gatt_report import new_report, serialize_services
+
+
+async def find_target(target, adapter, timeout):
+    devices = await BleakScanner.discover(
+        timeout=timeout,
+        return_adv=True,
+        bluez={"adapter": adapter},
+    )
+
+    target_normalized = target.upper()
+
+    for address, (device, adv) in devices.items():
+        if address.upper() == target_normalized:
+            return device, adv
+
+    return None, None
+
+
+async def inspect_target(target, adapter, timeout):
+    report = new_report(target, adapter)
+
+    try:
+        device, adv = await find_target(target, adapter, timeout)
+    except Exception as exc:
+        report["discovery"] = {
+            "attempted": True,
+            "found": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        return report, 2
+
+    if device is None:
+        report["discovery"] = {
+            "attempted": True,
+            "found": False,
+            "error": None,
+        }
+        return report, 3
+
+    report["discovery"] = {
+        "attempted": True,
+        "found": True,
+        "error": None,
+        "name": device.name,
+        "address": device.address,
+        "rssi": adv.rssi,
+        "advertised_service_uuids": list(adv.service_uuids),
+    }
+
+    report["connection"]["attempted"] = True
+
+    try:
+        client = BleakClient(
+            device,
+            timeout=timeout,
+            pair=False,
+        )
+    except Exception as exc:
+        report["connection"]["error"] = f"{type(exc).__name__}: {exc}"
+        return report, 4
+
+    status = 0
+
+    try:
+        try:
+            await client.connect()
+            report["connection"]["connected"] = client.is_connected
+
+            if not client.is_connected:
+                report["connection"]["error"] = (
+                    "BleakClient.connect() returned without connected state"
+                )
+                status = 4
+
+        except Exception as exc:
+            report["connection"]["error"] = f"{type(exc).__name__}: {exc}"
+            status = 4
+
+        if status == 0:
+            report["gatt"]["enumeration_attempted"] = True
+
+            try:
+                report["gatt"]["services"] = serialize_services(client.services)
+                report["gatt"]["enumerated"] = True
+            except Exception as exc:
+                report["gatt"]["error"] = f"{type(exc).__name__}: {exc}"
+                status = 5
+
+    finally:
+        # Cleanup even if connect() failed or returned without connecting.
+        report["disconnect"]["attempted"] = True
+
+        try:
+            await client.disconnect()
+            report["disconnect"]["completed"] = not client.is_connected
+
+            if not report["disconnect"]["completed"]:
+                report["disconnect"]["error"] = (
+                    "BleakClient.disconnect() returned while still connected"
+                )
+
+        except Exception as exc:
+            report["disconnect"]["error"] = f"{type(exc).__name__}: {exc}"
+
+    if report["disconnect"]["error"] is not None and status == 0:
+        status = 6
+
+    return report, status
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Read-only active BLE GATT enumeration for K'amal."
+    )
+
+    parser.add_argument(
+        "command",
+        choices=["inspect"],
+    )
+
+    parser.add_argument(
+        "target",
+        help="BLE target address",
+    )
+
+    parser.add_argument(
+        "--adapter",
+        default="hci0",
+        help="BlueZ adapter to use (default: hci0)",
+    )
+
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="Discovery/connection timeout in seconds (default: 10)",
+    )
+
+    parser.add_argument(
+        "--json",
+        dest="json_path",
+        help="Write report to this JSON file",
+    )
+
+    return parser.parse_args()
+
+
+async def async_main():
+    args = parse_args()
+
+    report, status = await inspect_target(
+        target=args.target,
+        adapter=args.adapter,
+        timeout=args.timeout,
+    )
+
+    output = json.dumps(report, indent=2, sort_keys=True)
+
+    if args.json_path:
+        with open(args.json_path, "w", encoding="utf-8") as handle:
+            handle.write(output)
+            handle.write("\n")
+    else:
+        print(output)
+
+    return status
+
+
+def main():
+    try:
+        status = asyncio.run(async_main())
+    except KeyboardInterrupt:
+        return 130
+
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

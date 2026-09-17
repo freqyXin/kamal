@@ -9,7 +9,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-VERSION = '0.1.1'
+VERSION = '0.2.0'
 FIELDS = {
     'frame': 'frame.number',
     'nordic_crcok': 'nordic_ble.crcok',
@@ -42,7 +42,14 @@ def main():
     ble = sub.add_parser('ble', help='inventory BLE advertisements from PCAP')
     ble.add_argument('--input', required=True, type=Path, help='existing .pcap/.pcapng file')
     ble.add_argument('--json', type=Path, help='write JSON inventory to this path (no overwrite)')
+    display = ble.add_mutually_exclusive_group()
+    display.add_argument('--all', action='store_true', help='display every advertiser')
+    display.add_argument('--limit', type=int, metavar='N',
+                         help='display at most N advertisers (default: 20)')
     args = p.parse_args()
+    if args.limit is not None and args.limit < 1:
+        p.error('--limit must be a positive integer')
+
     if args.radio != 'ble':
         p.error('only BLE is supported')
     if not args.input.is_file():
@@ -141,10 +148,17 @@ def main():
                   warnings=warnings, advertisers=devices)
     print(f'K’amal BLE inventory: {len(devices)} advertisers | {sum(d["packet_count"] for d in devices)} CRC-valid packets')
     print(f'CRC integrity (advertising-address frames): {integrity["valid"]} valid | {integrity["invalid"]} invalid | {integrity["unknown"]} unknown')
+    limit = len(devices) if args.all else (args.limit if args.limit is not None else 20)
+    displayed = devices[:limit]
+
     print(f'{"ADDRESS":17}  {"TYPE":7} {"PACKETS":>7} {"AVG RSSI":>9}  NAME(S)')
-    for d in devices:
+    for d in displayed:
         avg = d['rssi_dbm']['average'] if d['rssi_dbm'] else 'n/a'
         print(f'{d["address"]:17}  {d["address_type"]:7} {d["packet_count"]:7} {str(avg):>9}  {", ".join(d["names"]) or "-"}')
+    hidden = len(devices) - len(displayed)
+    if hidden:
+        print(f'Showing {len(displayed)} of {len(devices)} advertisers; use --all for the complete inventory')
+
     for warning in warnings:
         print(f'WARNING: {warning}', file=sys.stderr)
     if args.json:

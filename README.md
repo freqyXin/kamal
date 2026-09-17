@@ -1,9 +1,9 @@
 # kamal
 
 
-**K’amal** is a portable Raspberry Pi-based cellular field node designed for remote access, wireless research, data collection, and security testing.
+**K’amal** is a portable Raspberry Pi-based cellular field node designed for remote access and wireless security testing.
 
-The name **K’amal** comes from K’iche’ Maya and is intended to mean **“one who carries,” “one who conducts,” or “one who leads.”** This is reflected in the device's primary role, which is to carry operational comms between deployed systems and remote operators.
+The name **K’amal** comes from K’iche’ Maya and is intended to mean **“one who carries,” or “one who conducts,”** This is reflected in the device's primary role, which is to carry operational comms between deployed systems and remote operators.
 
 K’amal simplifies pairing a Raspberry Pi 5 with a Sixfab cellular HAT and Telit LE910C4-NF LTE modem. The modem operates as a USB Ethernet device using ECM, providing the Pi with an independent cellular Internet connection.
 

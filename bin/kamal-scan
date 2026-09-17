@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""K'amal passive BLE PCAP advertiser inventory, v0.1.1."""
+"""K'amal passive BLE PCAP advertiser inventory and offline identifier resolution."""
 import argparse
 import csv
 import json
@@ -9,7 +9,10 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-VERSION = '0.4.0'
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from kamal.identifiers import load_registry, resolve_identifier, resolve_uuid16
+
+VERSION = '0.5.0'
 FIELDS = {
     'frame': 'frame.number',
     'nordic_crcok': 'nordic_ble.crcok',
@@ -72,6 +75,13 @@ def main():
         p.error(f'refusing to overwrite: {args.json}')
     if args.csv and args.csv.exists():
         p.error(f'refusing to overwrite: {args.csv}')
+    try:
+        company_registry = load_registry('company_identifiers.json')
+        service_registry = load_registry('service_uuids.json')
+        member_registry = load_registry('member_uuids.json')
+    except (OSError, ValueError) as exc:
+        p.error(f'Bluetooth identifier registry unavailable or invalid: {exc}')
+
     cmd = ['tshark', '-r', str(args.input), '-Y', 'btle.advertising_address', '-T', 'fields',
            '-E', 'separator=/t', '-E', 'occurrence=a', '-E', 'aggregator=|']
     for field in FIELDS.values():
@@ -218,6 +228,22 @@ def main():
         for k in ('names', 'service_uuids_16', 'service_uuids_32', 'service_uuids_128',
                   'service_data', 'channels', 'pdu_types'):
             item[k] = sorted(item[k])
+        item['manufacturer_identifiers_resolved'] = [
+            {
+                **resolve_identifier(company_id, 16, company_registry),
+                'namespace': 'company_identifier',
+            }
+            for company_id in sorted({
+                entry['company_id']
+                for entry in item['manufacturer_data']
+            })
+        ]
+
+        item['service_uuids_16_resolved'] = [
+            resolve_uuid16(value, service_registry, member_registry)
+            for value in item['service_uuids_16']
+        ]
+
         item['profile'] = {
             'advertising_pdu_types': [
                 {
@@ -248,7 +274,22 @@ def main():
             warnings.append('Unable to parse capture metadata sidecar')
     else:
         warnings.append('No capture metadata sidecar; PCAP timing not validated')
-    report = dict(schema_version='0.4.0', source_pcap=str(args.input.resolve()),
+    registry_metadata = {
+        name: {
+            'source': registry.get('source'),
+            'source_commit': registry.get('source_commit'),
+            'source_file': registry.get('source_file'),
+            'generated_at_utc': registry.get('generated_at_utc'),
+        }
+        for name, registry in (
+            ('company_identifiers', company_registry),
+            ('service_uuids', service_registry),
+            ('member_uuids', member_registry),
+        )
+    }
+
+    report = dict(identifier_registries=registry_metadata,
+                  schema_version='0.5.0', source_pcap=str(args.input.resolve()),
                   source_metadata=str(sidecar.resolve()) if sidecar.is_file() else None,
                   advertiser_count=len(devices), skipped_ambiguous_packets=skipped,
                   integrity=dict(scope='frames with advertising address', **integrity),

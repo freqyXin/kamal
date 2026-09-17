@@ -2,3 +2,10 @@
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Generated Bluetooth SIG Assigned Numbers registries
+data/bluetooth/*.json
+
+# Python bytecode
+__pycache__/
+*.py[cod]

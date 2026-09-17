@@ -1,4 +1,4 @@
-# kamal
+# K'amal
 
 
 **K’amal** is a portable Raspberry Pi-based cellular field node designed for remote access and wireless security testing.

@@ -202,8 +202,8 @@ cd kamal
 Run the provisioning script:
 
 ```bash
-chmod +x setup-sixfab.sh
-sudo ./setup-sixfab.sh
+chmod +x setup/setup-sixfab.sh
+sudo ./setup/setup-sixfab.sh
 ```
 
 The installer configures:

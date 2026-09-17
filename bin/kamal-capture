@@ -415,7 +415,8 @@ capture_ble() {
 
     fi
 
-    printf "\nSaved:\n%s\n" "$output"}
+    printf "\nSaved:\n%s\n" "$output"
+}
 
 # ------------------------------------------------------------
 # Main dispatcher

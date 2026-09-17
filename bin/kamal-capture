@@ -551,7 +551,7 @@ capture_ble() {
         sed -n 's/^ID_SERIAL_SHORT=//p'
     )"
 
-    # --------------------------------------------------------
+        # --------------------------------------------------------
     # Timestamp monotonicity
     # --------------------------------------------------------
 
@@ -566,26 +566,19 @@ capture_ble() {
         -T fields \
         -e frame.time_epoch 2>/dev/null |
         awk '
-            NR == 1 {
-                previous=$1
-                next
-            }
+            NF {
+                if (seen && $1 < previous)
+                    bad=1
 
-            $1 < previous {
-                bad=1
-                exit
-            }
-
-            {
                 previous=$1
+                seen=1
             }
 
             END {
-                if (bad)
-                    exit 1
-
-                if (NR == 0)
+                if (!seen)
                     exit 2
+
+                exit bad ? 1 : 0
             }
         '
     then

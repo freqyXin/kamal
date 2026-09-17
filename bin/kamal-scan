@@ -80,7 +80,11 @@ def main():
         service_registry = load_registry('service_uuids.json')
         member_registry = load_registry('member_uuids.json')
     except (OSError, ValueError) as exc:
-        p.error(f'Bluetooth identifier registry unavailable or invalid: {exc}')
+        p.error(
+            f'Bluetooth identifier registry unavailable or invalid: {exc}\n'
+            'Generate the local registries using the instructions in '
+            'data/bluetooth/README.md'
+        )
 
     cmd = ['tshark', '-r', str(args.input), '-Y', 'btle.advertising_address', '-T', 'fields',
            '-E', 'separator=/t', '-E', 'occurrence=a', '-E', 'aggregator=|']

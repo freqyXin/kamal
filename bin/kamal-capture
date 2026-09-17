@@ -8,7 +8,7 @@
 
 set -Eeuo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 CAPTURE_ROOT="${KAMAL_CAPTURE_ROOT:-$HOME/captures}"
 BLE_DEVICE="/dev/kamal-ble-sniffer"
@@ -82,13 +82,21 @@ EOF
 # ------------------------------------------------------------
 
 radio_list() {
+    local controller=""
+    local resolved=""
+    local state=""
 
     printf "K'amal Radio Inventory\n"
     printf "======================\n\n"
 
+    # --------------------------------------------------------
+    # BLE control radio
+    # --------------------------------------------------------
+
     printf "BLE Control\n"
 
     if command -v bluetoothctl >/dev/null 2>&1; then
+
         controller="$(bluetoothctl list 2>/dev/null | head -1 || true)"
 
         if [[ -n "$controller" ]]; then
@@ -97,9 +105,16 @@ radio_list() {
         else
             printf "  %-12s %s\n" "Status:" "NOT FOUND"
         fi
+
     else
+
         printf "  %-12s %s\n" "Status:" "UNKNOWN"
+
     fi
+
+    # --------------------------------------------------------
+    # BLE capture radio
+    # --------------------------------------------------------
 
     printf "\nBLE Capture\n"
 
@@ -116,6 +131,10 @@ radio_list() {
         printf "  %-12s %s\n" "Status:" "NOT FOUND"
 
     fi
+
+    # --------------------------------------------------------
+    # Cellular
+    # --------------------------------------------------------
 
     printf "\nCellular\n"
 
@@ -138,18 +157,49 @@ radio_list() {
 # ------------------------------------------------------------
 
 capture_ble() {
-
     local duration=""
     local target_name=""
     local target_address=""
     local output=""
     local advertising_only=false
 
+    local port=""
+    local date_dir=""
+    local timestamp=""
+    local hostname=""
+    local capture_dir=""
+
+    local start_ns=""
+    local end_ns=""
+    local start_time=""
+    local end_time=""
+    local wall_duration=""
+
+    local packet_count=""
+    local pcap_duration=""
+    local file_size=""
+    local size_bytes=""
+    local sha256=""
+    local encapsulation=""
+
+    local metadata_file=""
+    local timestamps_monotonic=false
+    local radio_serial=""
+
+    local rc=0
+
+    local -a cmd
+
+    # --------------------------------------------------------
+    # Parse arguments
+    # --------------------------------------------------------
+
     while [[ $# -gt 0 ]]; do
 
         case "$1" in
 
             --duration)
+
                 [[ $# -ge 2 ]] ||
                     die "--duration requires a value."
 
@@ -158,6 +208,7 @@ capture_ble() {
                 ;;
 
             --name)
+
                 [[ $# -ge 2 ]] ||
                     die "--name requires a value."
 
@@ -166,6 +217,7 @@ capture_ble() {
                 ;;
 
             --address)
+
                 [[ $# -ge 2 ]] ||
                     die "--address requires a value."
 
@@ -174,6 +226,7 @@ capture_ble() {
                 ;;
 
             --output)
+
                 [[ $# -ge 2 ]] ||
                     die "--output requires a value."
 
@@ -182,23 +235,38 @@ capture_ble() {
                 ;;
 
             --advertising-only)
+
                 advertising_only=true
                 shift
                 ;;
 
             -h|--help)
+
                 usage
                 exit 0
                 ;;
 
             *)
+
                 die "Unknown BLE option: $1"
                 ;;
 
         esac
+
     done
 
+    # --------------------------------------------------------
+    # Dependencies
+    # --------------------------------------------------------
+
     require_command nrfutil
+    require_command python3
+    require_command capinfos
+    require_command tshark
+    require_command udevadm
+    require_command timeout
+    require_command stat
+    require_command awk
 
     # --------------------------------------------------------
     # Validate radio
@@ -206,8 +274,6 @@ capture_ble() {
 
     [[ -e "$BLE_DEVICE" ]] ||
         die "BLE capture radio not found: $BLE_DEVICE"
-
-    local port
 
     port="$(readlink -e "$BLE_DEVICE")"
 
@@ -219,29 +285,31 @@ capture_ble() {
     # --------------------------------------------------------
 
     if [[ -n "$duration" ]] &&
-       ! [[ "$duration" =~ ^[0-9]+$ ]] ; then
+       ! [[ "$duration" =~ ^[0-9]+$ ]]; then
 
         die "Duration must be an integer number of seconds."
 
     fi
 
+    if [[ "$duration" == "0" ]]; then
+        die "Duration must be greater than zero."
+    fi
+
     if [[ -n "$target_name" && -n "$target_address" ]]; then
+
         die "--name and --address cannot currently be used together."
+
     fi
 
     # --------------------------------------------------------
     # Generate capture path
     # --------------------------------------------------------
 
-    local date_dir
-    local timestamp
-    local hostname
-
     date_dir="$(date +%Y-%m-%d)"
     timestamp="$(date +%H%M%S)"
     hostname="$(hostname -s)"
 
-    local capture_dir="${CAPTURE_ROOT}/ble/${date_dir}"
+    capture_dir="${CAPTURE_ROOT}/ble/${date_dir}"
 
     mkdir -p "$capture_dir"
 
@@ -255,15 +323,19 @@ capture_ble() {
 
     fi
 
+    metadata_file="${output%.*}.json"
+
     # Don't silently overwrite evidence.
+
     [[ ! -e "$output" ]] ||
         die "Output file already exists: $output"
+
+    [[ ! -e "$metadata_file" ]] ||
+        die "Metadata file already exists: $metadata_file"
 
     # --------------------------------------------------------
     # Construct Nordic command
     # --------------------------------------------------------
-
-    local -a cmd
 
     cmd=(
         nrfutil
@@ -274,19 +346,25 @@ capture_ble() {
     )
 
     if [[ -n "$target_name" ]]; then
+
         cmd+=(--follow-by-name "$target_name")
+
     fi
 
     if [[ -n "$target_address" ]]; then
+
         cmd+=(--follow-by-address "$target_address")
+
     fi
 
     if [[ "$advertising_only" == true ]]; then
+
         cmd+=(--advertising-only)
+
     fi
 
     # --------------------------------------------------------
-    # Start capture
+    # Capture summary
     # --------------------------------------------------------
 
     printf "\nK'amal BLE Capture\n"
@@ -297,33 +375,41 @@ capture_ble() {
     printf "Output:      %s\n" "$output"
 
     if [[ -n "$duration" ]]; then
+
         printf "Duration:    %s seconds\n" "$duration"
+
     else
+
         printf "Duration:    until Ctrl-C\n"
+
     fi
 
     if [[ -n "$target_name" ]]; then
+
         printf "Target name: %s\n" "$target_name"
+
     fi
 
     if [[ -n "$target_address" ]]; then
+
         printf "Target addr: %s\n" "$target_address"
+
+    fi
+
+    if [[ "$advertising_only" == true ]]; then
+
+        printf "Mode:        advertising only\n"
+
     fi
 
     printf "\n"
 
     # --------------------------------------------------------
-    # Execute
+    # Execute capture
     # --------------------------------------------------------
 
-    local start_ns
-    local end_ns
-    local wall_duration
-
-    start_ns="$(date +%s%N)"
-
-    local start_time
     start_time="$(date --iso-8601=seconds)"
+    start_ns="$(date +%s%N)"
 
     if [[ -n "$duration" ]]; then
 
@@ -339,8 +425,15 @@ capture_ble() {
 
         set -e
 
+        #
+        # GNU timeout returns 124 when the requested timeout
+        # occurs. This is expected for duration-limited captures.
+        #
+
         if [[ "$rc" -ne 0 && "$rc" -ne 124 ]]; then
+
             die "BLE capture failed with exit code $rc"
+
         fi
 
     else
@@ -350,14 +443,15 @@ capture_ble() {
     fi
 
     end_ns="$(date +%s%N)"
-    local end_time
     end_time="$(date --iso-8601=seconds)"
 
     wall_duration="$(
         awk \
             -v start="$start_ns" \
             -v end="$end_ns" \
-            'BEGIN { printf "%.3f", (end - start) / 1000000000 }'
+            'BEGIN {
+                printf "%.3f", (end - start) / 1000000000
+            }'
     )"
 
     # --------------------------------------------------------
@@ -367,58 +461,253 @@ capture_ble() {
     [[ -s "$output" ]] ||
         die "Capture file was not created or is empty."
 
-    printf "\nCapture complete.\n\n"
+    # --------------------------------------------------------
+    # Extract capture statistics
+    # --------------------------------------------------------
 
-    printf "Wall duration:       %s seconds\n" "$wall_duration"
-
-    if command -v capinfos >/dev/null 2>&1; then
-
-        packet_count="$(
-            capinfos "$output" |
-            awk -F: '/Number of packets:/ {
+    packet_count="$(
+        capinfos "$output" |
+        awk -F: '
+            /Number of packets:/ {
                 gsub(/^[ \t]+/, "", $2)
                 print $2
                 exit
-            }'
-        )"
+            }
+        '
+    )"
 
-        pcap_duration="$(
-            capinfos "$output" |
-            awk -F: '/Capture duration:/ {
+    pcap_duration="$(
+        capinfos "$output" |
+        awk -F: '
+            /Capture duration:/ {
+                gsub(/^[ \t]+/, "", $2)
+                sub(/[[:space:]]+seconds$/, "", $2)
+                print $2
+                exit
+            }
+        '
+    )"
+
+    file_size="$(
+        capinfos "$output" |
+        awk -F: '
+            /File size:/ {
                 gsub(/^[ \t]+/, "", $2)
                 print $2
                 exit
-            }'
-        )"
+            }
+        '
+    )"
 
-        file_size="$(
-            capinfos "$output" |
-            awk -F: '/File size:/ {
+    sha256="$(
+        capinfos "$output" |
+        awk -F: '
+            /SHA256:/ {
                 gsub(/^[ \t]+/, "", $2)
                 print $2
                 exit
-            }'
-        )"
+            }
+        '
+    )"
 
-        sha256="$(
-            capinfos "$output" |
-            awk -F: '/SHA256:/ {
+    encapsulation="$(
+        capinfos "$output" |
+        awk -F: '
+            /File encapsulation:/ {
                 gsub(/^[ \t]+/, "", $2)
                 print $2
                 exit
-            }'
-        )"
+            }
+        '
+    )"
 
-        printf "Packets:             %s\n" "${packet_count:-unknown}"
-        printf "File size:           %s\n" "${file_size:-unknown}"
-        printf "PCAP timestamp span: %s\n" "${pcap_duration:-unknown}"
-        printf "SHA256:              %s\n" "${sha256:-unknown}"
+    size_bytes="$(stat -c '%s' "$output")"
+
+    # Validate values needed by the metadata generator.
+
+    [[ "$packet_count" =~ ^[0-9]+$ ]] ||
+        die "Unable to determine packet count."
+
+    [[ "$pcap_duration" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+        die "Unable to determine PCAP timestamp span."
+
+    [[ "$size_bytes" =~ ^[0-9]+$ ]] ||
+        die "Unable to determine capture file size."
+
+    [[ -n "$sha256" ]] ||
+        die "Unable to determine capture SHA256."
+
+    [[ -n "$encapsulation" ]] ||
+        die "Unable to determine capture encapsulation."
+
+    # --------------------------------------------------------
+    # Radio metadata
+    # --------------------------------------------------------
+
+    radio_serial="$(
+        udevadm info \
+            --query=property \
+            --name="$port" 2>/dev/null |
+        sed -n 's/^ID_SERIAL_SHORT=//p'
+    )"
+
+    # --------------------------------------------------------
+    # Timestamp monotonicity
+    # --------------------------------------------------------
+
+    #
+    # Nordic sniffer captures have been observed to contain
+    # timestamp discontinuities. Preserve the original PCAP
+    # unchanged and record whether timestamps move backwards.
+    #
+
+    if tshark \
+        -r "$output" \
+        -T fields \
+        -e frame.time_epoch 2>/dev/null |
+        awk '
+            NR == 1 {
+                previous=$1
+                next
+            }
+
+            $1 < previous {
+                bad=1
+                exit
+            }
+
+            {
+                previous=$1
+            }
+
+            END {
+                if (bad)
+                    exit 1
+
+                if (NR == 0)
+                    exit 2
+            }
+        '
+    then
+
+        timestamps_monotonic=true
 
     else
 
-        ls -lh "$output"
+        timestamps_monotonic=false
 
     fi
+
+    # --------------------------------------------------------
+    # Generate JSON metadata
+    # --------------------------------------------------------
+
+    python3 - \
+        "$metadata_file" \
+        "$output" \
+        "$hostname" \
+        "$start_time" \
+        "$end_time" \
+        "$duration" \
+        "$wall_duration" \
+        "$BLE_DEVICE" \
+        "$port" \
+        "$radio_serial" \
+        "$packet_count" \
+        "$size_bytes" \
+        "$encapsulation" \
+        "$pcap_duration" \
+        "$timestamps_monotonic" \
+        "$sha256" \
+        "$target_name" \
+        "$target_address" \
+        "$advertising_only" <<'PY'
+import json
+import os
+import sys
+
+(
+    metadata_file,
+    capture_file,
+    hostname,
+    start_time,
+    end_time,
+    requested_duration,
+    wall_duration,
+    radio_device,
+    resolved_device,
+    radio_serial,
+    packet_count,
+    size_bytes,
+    encapsulation,
+    timestamp_span,
+    timestamps_monotonic,
+    sha256,
+    target_name,
+    target_address,
+    advertising_only,
+) = sys.argv[1:]
+
+metadata = {
+    "schema_version": "1.0",
+
+    "capture": {
+        "type": "ble",
+        "hostname": hostname,
+        "start_time": start_time,
+        "end_time": end_time,
+        "requested_duration_seconds": (
+            int(requested_duration)
+            if requested_duration
+            else None
+        ),
+        "wall_duration_seconds": float(wall_duration),
+        "packet_count": int(packet_count),
+    },
+
+    "radio": {
+        "role": "ble-sniffer",
+        "device": radio_device,
+        "resolved_device": resolved_device,
+        "serial": radio_serial or None,
+        "hardware": "Nordic nRF52840 Dongle",
+        "board": "PCA10059",
+    },
+
+    "pcap": {
+        "file": os.path.basename(capture_file),
+        "size_bytes": int(size_bytes),
+        "encapsulation": encapsulation,
+        "timestamp_span_seconds": float(timestamp_span),
+        "timestamps_monotonic": timestamps_monotonic == "true",
+        "sha256": sha256,
+    },
+
+    "filters": {
+        "name": target_name or None,
+        "address": target_address or None,
+        "advertising_only": advertising_only == "true",
+    },
+}
+
+with open(metadata_file, "w", encoding="utf-8") as f:
+    json.dump(metadata, f, indent=2)
+    f.write("\n")
+PY
+
+    # --------------------------------------------------------
+    # Results
+    # --------------------------------------------------------
+
+    printf "\nCapture complete.\n\n"
+
+    printf "Wall duration:       %s seconds\n" "$wall_duration"
+    printf "Packets:             %s\n" "$packet_count"
+    printf "File size:           %s\n" "$file_size"
+    printf "PCAP timestamp span: %s seconds\n" "$pcap_duration"
+    printf "Timestamp monotonic: %s\n" "$timestamps_monotonic"
+    printf "SHA256:              %s\n" "$sha256"
+    printf "Metadata:            %s\n" "$metadata_file"
 
     printf "\nSaved:\n%s\n" "$output"
 }
@@ -437,24 +726,29 @@ main() {
     case "$1" in
 
         list)
+
             shift
             radio_list "$@"
             ;;
 
         ble)
+
             shift
             capture_ble "$@"
             ;;
 
         version|--version)
+
             printf "kamal-capture %s\n" "$VERSION"
             ;;
 
         help|-h|--help)
+
             usage
             ;;
 
         *)
+
             die "Unknown capture type: $1"
             ;;
 

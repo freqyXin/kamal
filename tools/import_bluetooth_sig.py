@@ -26,6 +26,16 @@ SOURCES = {
         "collection": "uuids",
         "key": "uuid",
     },
+    "characteristic_uuids": {
+        "path": "assigned_numbers/uuids/characteristic_uuids.yaml",
+        "collection": "uuids",
+        "key": "uuid",
+    },
+    "descriptor_uuids": {
+        "path": "assigned_numbers/uuids/descriptors.yaml",
+        "collection": "uuids",
+        "key": "uuid",
+    },
 }
 
 

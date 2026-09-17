@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from kamal.identifiers import load_registry, resolve_identifier, resolve_uuid16
 
-VERSION = '0.5.0'
+VERSION = '0.6.0'
 FIELDS = {
     'frame': 'frame.number',
     'nordic_crcok': 'nordic_ble.crcok',
@@ -293,7 +293,7 @@ def main():
     }
 
     report = dict(identifier_registries=registry_metadata,
-                  schema_version='0.5.0', source_pcap=str(args.input.resolve()),
+                  schema_version='0.6.0', source_pcap=str(args.input.resolve()),
                   source_metadata=str(sidecar.resolve()) if sidecar.is_file() else None,
                   advertiser_count=len(devices), skipped_ambiguous_packets=skipped,
                   integrity=dict(scope='frames with advertising address', **integrity),

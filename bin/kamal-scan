@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""K'amal passive BLE PCAP advertiser inventory, v0.1.1."""
+import argparse
+import csv
+import json
+import re
+import subprocess
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+VERSION = '0.1.1'
+FIELDS = {
+    'frame': 'frame.number',
+    'nordic_crcok': 'nordic_ble.crcok',
+    'nordic_crc_bad': 'nordic_ble.crc.bad',
+    'btle_crc_bad': 'btle.crc.incorrect',
+    'rf_crc_checked': 'btle_rf.flags.crc_checked',
+    'rf_crc_valid': 'btle_rf.flags.crc_valid',
+    'address': 'btle.advertising_address',
+    'random': 'btle.advertising_header.randomized_tx',
+    'pdu': 'btle.advertising_header.pdu_type',
+    'rssi': 'nordic_ble.rssi',
+    'channel': 'nordic_ble.channel',
+    'name': 'btcommon.eir_ad.entry.device_name',
+    'uuid16': 'btcommon.eir_ad.entry.uuid_16',
+    'uuid32': 'btcommon.eir_ad.entry.uuid_32',
+    'uuid128': 'btcommon.eir_ad.entry.uuid_128',
+    'service_data': 'btcommon.eir_ad.entry.service_data',
+    'company': 'btcommon.eir_ad.entry.company_id',
+    'data': 'btcommon.eir_ad.entry.data',
+}
+ADDRESS = re.compile(r'^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$', re.I)
+
+def values(raw):
+    return [s.strip() for s in raw.split('|') if s.strip()]
+
+def main():
+    p = argparse.ArgumentParser(description='Passive BLE advertiser inventory from a Nordic PCAP')
+    p.add_argument('--version', action='version', version=f'kamal-scan {VERSION}')
+    sub = p.add_subparsers(dest='radio', required=True)
+    ble = sub.add_parser('ble', help='inventory BLE advertisements from PCAP')
+    ble.add_argument('--input', required=True, type=Path, help='existing .pcap/.pcapng file')
+    ble.add_argument('--json', type=Path, help='write JSON inventory to this path (no overwrite)')
+    args = p.parse_args()
+    if args.radio != 'ble':
+        p.error('only BLE is supported')
+    if not args.input.is_file():
+        p.error(f'PCAP not found: {args.input}')
+    if args.json and args.json.exists():
+        p.error(f'refusing to overwrite: {args.json}')
+    cmd = ['tshark', '-r', str(args.input), '-Y', 'btle.advertising_address', '-T', 'fields',
+           '-E', 'separator=/t', '-E', 'occurrence=a', '-E', 'aggregator=|']
+    for field in FIELDS.values():
+        cmd.extend(['-e', field])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except FileNotFoundError:
+        p.error('tshark is not installed or not in PATH')
+    except subprocess.CalledProcessError as exc:
+        p.error(f'tshark failed: {exc.stderr.strip()}')
+    inventory = {}
+    skipped = 0
+    integrity = dict(valid=0, invalid=0, unknown=0, invalid_with_address=0, unknown_with_address=0)
+    for row in csv.reader(result.stdout.splitlines(), delimiter='\t'):
+        row += [''] * (len(FIELDS) - len(row))
+        f = dict(zip(FIELDS, row))
+        # A failure from either dissector overrides any reported success.
+        # btle.crc.incorrect / nordic_ble.crc.bad are presence-only fields.
+        nordic = f['nordic_crcok'].strip().lower()
+        rf_checked = f['rf_crc_checked'].strip().lower()
+        rf_valid = f['rf_crc_valid'].strip().lower()
+        failed = bool(f['nordic_crc_bad'].strip() or f['btle_crc_bad'].strip()) or nordic in ('false', '0') or (rf_checked in ('true', '1') and rf_valid in ('false', '0'))
+        passed = nordic in ('true', '1') or (rf_checked in ('true', '1') and rf_valid in ('true', '1'))
+        status = 'invalid' if failed else 'valid' if passed else 'unknown'
+        integrity[status] += 1
+        addresses = values(f['address'])
+        if status != 'valid':
+            integrity[status + '_with_address'] += 1
+            continue
+        if len(addresses) != 1 or not ADDRESS.fullmatch(addresses[0]):
+            skipped += 1
+            continue
+        address = addresses[0].lower()
+        addr_type = {'true': 'random', 'false': 'public'}.get(f['random'].lower(), 'unknown')
+        key = (address, addr_type)
+        if key not in inventory:
+            inventory[key] = dict(address=address, address_type=addr_type, packet_count=0,
+                                  names=set(), service_uuids_16=set(), service_uuids_32=set(),
+                                  service_uuids_128=set(), service_data=set(),
+                                  manufacturer_data=set(), rssi_samples=[], channels=set(), pdu_types=set())
+        item = inventory[key]
+        item['packet_count'] += 1
+        for source, dest in [('name', 'names'), ('uuid16', 'service_uuids_16'),
+                             ('uuid32', 'service_uuids_32'), ('uuid128', 'service_uuids_128'),
+                             ('service_data', 'service_data')]:
+            item[dest].update(values(f[source]))
+        companies = values(f['company'])
+        data = values(f['data'])
+        # Only associate payload with a company ID when there is exactly one of each.
+        # Otherwise preserve company IDs without incorrectly pairing AD structures.
+        if len(companies) == 1 and len(data) == 1:
+            item['manufacturer_data'].add((companies[0], data[0]))
+        else:
+            item['manufacturer_data'].update((company, None) for company in companies)
+        try:
+            if f['rssi'].strip():
+                item['rssi_samples'].append(int(f['rssi']))
+        except ValueError:
+            pass
+        item['channels'].update(values(f['channel']))
+        item['pdu_types'].update(values(f['pdu']))
+    devices = []
+    for item in inventory.values():
+        samples = item.pop('rssi_samples')
+        item['rssi_dbm'] = (dict(min=min(samples), max=max(samples), average=round(sum(samples)/len(samples), 1),
+                                 samples=len(samples)) if samples else None)
+        item['manufacturer_data'] = [dict(company_id=c, payload_hex=d)
+                                     for c, d in sorted(item['manufacturer_data'], key=lambda x: (x[0], x[1] or ''))]
+        for k in ('names', 'service_uuids_16', 'service_uuids_32', 'service_uuids_128',
+                  'service_data', 'channels', 'pdu_types'):
+            item[k] = sorted(item[k])
+        devices.append(item)
+    devices.sort(key=lambda d: (-d['packet_count'], d['address']))
+    sidecar = args.input.with_suffix('.json')
+    warnings = []
+    if sidecar.is_file():
+        try:
+            metadata = json.loads(sidecar.read_text())
+            pc = metadata.get('pcap', {})
+            if pc.get('timestamp_discontinuity_detected') or pc.get('timestamp_span_anomalous') or pc.get('timestamps_monotonic') is False:
+                warnings.append('PCAP timestamps anomalous; no elapsed-time or first/last-seen estimates provided')
+        except (OSError, ValueError):
+            warnings.append('Unable to parse capture metadata sidecar')
+    else:
+        warnings.append('No capture metadata sidecar; PCAP timing not validated')
+    report = dict(schema_version='0.1.1', source_pcap=str(args.input.resolve()),
+                  source_metadata=str(sidecar.resolve()) if sidecar.is_file() else None,
+                  advertiser_count=len(devices), skipped_ambiguous_packets=skipped,
+                  integrity=dict(scope='frames with advertising address', **integrity),
+                  warnings=warnings, advertisers=devices)
+    print(f'K’amal BLE inventory: {len(devices)} advertisers | {sum(d["packet_count"] for d in devices)} CRC-valid packets')
+    print(f'CRC integrity (advertising-address frames): {integrity["valid"]} valid | {integrity["invalid"]} invalid | {integrity["unknown"]} unknown')
+    print(f'{"ADDRESS":17}  {"TYPE":7} {"PACKETS":>7} {"AVG RSSI":>9}  NAME(S)')
+    for d in devices:
+        avg = d['rssi_dbm']['average'] if d['rssi_dbm'] else 'n/a'
+        print(f'{d["address"]:17}  {d["address_type"]:7} {d["packet_count"]:7} {str(avg):>9}  {", ".join(d["names"]) or "-"}')
+    for warning in warnings:
+        print(f'WARNING: {warning}', file=sys.stderr)
+    if args.json:
+        try:
+            with args.json.open('x', encoding='utf-8') as output:
+                json.dump(report, output, indent=2, ensure_ascii=False)
+                output.write('\n')
+        except OSError as exc:
+            p.error(f'cannot write JSON: {exc}')
+        print(f'JSON: {args.json}')
+
+if __name__ == '__main__':
+    main()

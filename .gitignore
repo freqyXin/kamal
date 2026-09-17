@@ -9,3 +9,6 @@ data/bluetooth/*.json
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Local Python environment
+.venv/

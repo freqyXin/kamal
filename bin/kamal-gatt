@@ -11,6 +11,44 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bleak import BleakClient, BleakScanner
 
 from kamal.gatt_report import new_report, serialize_services
+from kamal.identifiers import load_registry
+
+
+REGISTRY_FILES = {
+    "service": "service_uuids.json",
+    "characteristic": "characteristic_uuids.json",
+    "descriptor": "descriptor_uuids.json",
+}
+
+
+def load_gatt_registries():
+    """Load the three required offline Bluetooth SIG registries."""
+    registries = {
+        namespace: load_registry(filename)
+        for namespace, filename in REGISTRY_FILES.items()
+    }
+
+    revisions = {
+        registry["source_commit"]
+        for registry in registries.values()
+    }
+    if len(revisions) != 1:
+        raise ValueError("GATT registries use different source revisions")
+
+    provenance = {
+        "source": "Bluetooth SIG Assigned Numbers",
+        "source_commit": revisions.pop(),
+        "registries": {
+            namespace: {
+                "file": REGISTRY_FILES[namespace],
+                "source_file": registry["source_file"],
+                "generated_at_utc": registry["generated_at_utc"],
+            }
+            for namespace, registry in registries.items()
+        },
+    }
+
+    return registries, provenance
 
 
 async def find_target(target, adapter, timeout):
@@ -29,8 +67,10 @@ async def find_target(target, adapter, timeout):
     return None, None
 
 
-async def inspect_target(target, adapter, timeout):
+async def inspect_target(target, adapter, timeout, registries=None, provenance=None):
     report = new_report(target, adapter)
+    if provenance is not None:
+        report["identifier_resolution"] = provenance
 
     try:
         device, adv = await find_target(target, adapter, timeout)
@@ -93,7 +133,7 @@ async def inspect_target(target, adapter, timeout):
             report["gatt"]["enumeration_attempted"] = True
 
             try:
-                report["gatt"]["services"] = serialize_services(client.services)
+                report["gatt"]["services"] = serialize_services(client.services, registries)
                 report["gatt"]["enumerated"] = True
             except Exception as exc:
                 report["gatt"]["error"] = f"{type(exc).__name__}: {exc}"
@@ -161,10 +201,22 @@ def parse_args():
 async def async_main():
     args = parse_args()
 
+    try:
+        registries, provenance = load_gatt_registries()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(
+            f"GATT registry error: {exc}. "
+            "See data/bluetooth/README.md for generation instructions.",
+            file=sys.stderr,
+        )
+        return 7
+
     report, status = await inspect_target(
         target=args.target,
         adapter=args.adapter,
         timeout=args.timeout,
+        registries=registries,
+        provenance=provenance,
     )
 
     output = json.dumps(report, indent=2, sort_keys=True)

@@ -28,6 +28,58 @@ def normalize_identifier(value, bits):
     return f"0x{number:0{bits // 4}x}"
 
 
+BLUETOOTH_BASE_UUID_SUFFIX = "-0000-1000-8000-00805f9b34fb"
+
+
+def normalize_bluetooth_uuid16(value):
+    """Return a 16-bit assigned number from a Bluetooth UUID, or None.
+
+    Accepts ordinary 16-bit hexadecimal identifiers and 128-bit UUIDs using
+    the Bluetooth Base UUID. Vendor-specific 128-bit UUIDs are not reduced or
+    inferred.
+    """
+    normalized = normalize_identifier(value, 16)
+    if normalized is not None:
+        return normalized
+
+    if not isinstance(value, str):
+        return None
+
+    uuid = value.strip().lower()
+    if (
+        len(uuid) == 36
+        and uuid.startswith("0000")
+        and uuid.endswith(BLUETOOTH_BASE_UUID_SUFFIX)
+    ):
+        return normalize_identifier(uuid[4:8], 16)
+
+    return None
+
+
+def resolve_gatt_uuid(value, namespace, registry):
+    """Resolve a GATT UUID in one explicitly selected assigned namespace."""
+    normalized = normalize_bluetooth_uuid16(value)
+
+    if normalized is None:
+        return {
+            "id": value,
+            "name": None,
+            "status": "unknown",
+            "namespace": namespace,
+            "identity_inference": False,
+        }
+
+    name = registry["identifiers"].get(normalized)
+
+    return {
+        "id": normalized,
+        "name": name,
+        "status": "assigned" if name is not None else "unknown",
+        "namespace": namespace,
+        "identity_inference": False,
+    }
+
+
 def load_registry(filename):
     """Load a versioned local identifier registry."""
     path = REGISTRY_DIR / filename

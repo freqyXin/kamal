@@ -2,8 +2,10 @@
 
 from datetime import datetime, timezone
 
+from kamal.identifiers import resolve_gatt_uuid
 
-SCHEMA_VERSION = "0.6.0"
+
+SCHEMA_VERSION = "0.7.0"
 
 
 def utc_now():
@@ -42,7 +44,7 @@ def new_report(target, adapter):
     }
 
 
-def serialize_services(services):
+def serialize_services(services, registries=None):
     """Serialize GATT metadata without reading characteristic values."""
     result = []
 
@@ -58,17 +60,43 @@ def serialize_services(services):
                 for descriptor in sorted(characteristic.descriptors, key=lambda item: item.handle)
             ]
 
-            characteristics.append({
+            if registries is not None:
+                for item in descriptors:
+                    item["resolution"] = resolve_gatt_uuid(
+                        item["uuid"],
+                        "descriptor",
+                        registries["descriptor"],
+                    )
+
+            characteristic_record = {
                 "handle": characteristic.handle,
                 "uuid": characteristic.uuid,
                 "properties": list(characteristic.properties),
                 "descriptors": descriptors,
-            })
+            }
 
-        result.append({
+            if registries is not None:
+                characteristic_record["resolution"] = resolve_gatt_uuid(
+                    characteristic.uuid,
+                    "characteristic",
+                    registries["characteristic"],
+                )
+
+            characteristics.append(characteristic_record)
+
+        service_record = {
             "handle": service.handle,
             "uuid": service.uuid,
             "characteristics": characteristics,
-        })
+        }
+
+        if registries is not None:
+            service_record["resolution"] = resolve_gatt_uuid(
+                service.uuid,
+                "service",
+                registries["service"],
+            )
+
+        result.append(service_record)
 
     return result

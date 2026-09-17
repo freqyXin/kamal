@@ -578,7 +578,12 @@ The current implementation has been tested for:
 
 ## License
 
-Add the appropriate project license here.
+K'amal is licensed under the Apache License, Version 2.0.
+
+You may use, modify, and distribute K'amal, including for commercial
+purposes, subject to the terms of the Apache License 2.0.
+
+See [LICENSE](LICENSE) for details.
 
 For security research deployments, ensure all monitoring, interception, collection, and testing is performed only on systems and radio environments where you have appropriate authorization.
 

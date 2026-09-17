@@ -1,3 +1,11 @@
+# Cellular Connectivity
+
+K'amal uses a Telit LE910C4-NF LTE modem on the Sixfab Base HAT
+to provide cellular backhaul for remote field deployments.
+
+This document describes modem configuration, ECM networking,
+automatic session activation, routing, failover, and troubleshooting.
+
 ## Telit ECM Configuration
 
 The Telit LE910C4-NF is configured to expose an Ethernet Control Model interface over USB.

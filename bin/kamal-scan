@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""K'amal passive BLE PCAP advertiser inventory, v0.1.1."""
+"""K'amal passive BLE PCAP advertiser inventory and offline identifier resolution."""
 import argparse
 import csv
 import json
 import re
 import subprocess
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
-VERSION = '0.3.0'
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from kamal.identifiers import load_registry, resolve_identifier, resolve_uuid16
+
+VERSION = '0.5.0'
 FIELDS = {
     'frame': 'frame.number',
     'nordic_crcok': 'nordic_ble.crcok',
@@ -19,6 +22,8 @@ FIELDS = {
     'rf_crc_valid': 'btle_rf.flags.crc_valid',
     'address': 'btle.advertising_address',
     'random': 'btle.advertising_header.randomized_tx',
+    'random_rx': 'btle.advertising_header.randomized_rx',
+    'scanner': 'btle.scanning_address',
     'pdu': 'btle.advertising_header.pdu_type',
     'rssi': 'nordic_ble.rssi',
     'channel': 'nordic_ble.channel',
@@ -30,6 +35,17 @@ FIELDS = {
     'company': 'btcommon.eir_ad.entry.company_id',
     'data': 'btcommon.eir_ad.entry.data',
 }
+PDU_NAMES = {
+    '0x00': 'ADV_IND',
+    '0x01': 'ADV_DIRECT_IND',
+    '0x02': 'ADV_NONCONN_IND',
+    '0x03': 'SCAN_REQ',
+    '0x04': 'SCAN_RSP',
+    '0x05': 'CONNECT_IND',
+    '0x06': 'ADV_SCAN_IND',
+    '0x07': 'ADV_EXT_IND',
+}
+
 ADDRESS = re.compile(r'^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$', re.I)
 
 def values(raw):
@@ -59,6 +75,17 @@ def main():
         p.error(f'refusing to overwrite: {args.json}')
     if args.csv and args.csv.exists():
         p.error(f'refusing to overwrite: {args.csv}')
+    try:
+        company_registry = load_registry('company_identifiers.json')
+        service_registry = load_registry('service_uuids.json')
+        member_registry = load_registry('member_uuids.json')
+    except (OSError, ValueError) as exc:
+        p.error(
+            f'Bluetooth identifier registry unavailable or invalid: {exc}\n'
+            'Generate the local registries using the instructions in '
+            'data/bluetooth/README.md'
+        )
+
     cmd = ['tshark', '-r', str(args.input), '-Y', 'btle.advertising_address', '-T', 'fields',
            '-E', 'separator=/t', '-E', 'occurrence=a', '-E', 'aggregator=|']
     for field in FIELDS.values():
@@ -70,6 +97,10 @@ def main():
     except subprocess.CalledProcessError as exc:
         p.error(f'tshark failed: {exc.stderr.strip()}')
     inventory = {}
+    scan_targets = defaultdict(lambda: {
+        'scan_requests_observed': 0,
+        'scanner_counts': Counter(),
+    })
     skipped = 0
     integrity = dict(valid=0, invalid=0, unknown=0, invalid_with_address=0, unknown_with_address=0)
     for row in csv.reader(result.stdout.splitlines(), delimiter='\t'):
@@ -92,7 +123,30 @@ def main():
             skipped += 1
             continue
         address = addresses[0].lower()
-        addr_type = {'true': 'random', 'false': 'public'}.get(f['random'].lower(), 'unknown')
+        pdu = f['pdu'].strip().lower()
+
+        if pdu == '0x03':
+            # SCAN_REQ: TxAdd describes ScanA; RxAdd describes AdvA.
+            addr_type = {
+                'true': 'random',
+                'false': 'public',
+            }.get(f['random_rx'].strip().lower(), 'unknown')
+
+            key = (address, addr_type)
+            target = scan_targets[key]
+            target['scan_requests_observed'] += 1
+
+            scanners = values(f['scanner'])
+            if len(scanners) == 1 and ADDRESS.fullmatch(scanners[0]):
+                target['scanner_counts'][scanners[0].lower()] += 1
+
+            continue
+
+        addr_type = {
+            'true': 'random',
+            'false': 'public',
+        }.get(f['random'].strip().lower(), 'unknown')
+
         key = (address, addr_type)
         if key not in inventory:
             inventory[key] = dict(address=address, address_type=addr_type, packet_count=0,
@@ -120,6 +174,54 @@ def main():
             pass
         item['channels'].update(values(f['channel']))
         item['pdu_types'].update(values(f['pdu']))
+    # Attach scan-request observations only to matching advertiser records.
+    # A scan-request-only target is not promoted into the advertiser inventory.
+    for key, item in inventory.items():
+        observed = scan_targets.get(key)
+        item['scan_requests_observed'] = (
+            observed['scan_requests_observed'] if observed else 0
+        )
+        item['scanner_addresses'] = (
+            sorted(observed['scanner_counts']) if observed else []
+        )
+        item['scanner_activity'] = (
+            [
+                {
+                    'address': scanner,
+                    'scan_requests_observed': count,
+                }
+                for scanner, count in sorted(
+                    observed['scanner_counts'].items(),
+                    key=lambda entry: (-entry[1], entry[0]),
+                )
+            ]
+            if observed else []
+        )
+
+    target_only = []
+    for (address, addr_type), observed in scan_targets.items():
+        if (address, addr_type) not in inventory:
+            target_only.append({
+                'address': address,
+                'address_type': addr_type,
+                'scan_requests_observed': observed['scan_requests_observed'],
+                'scanner_addresses': sorted(observed['scanner_counts']),
+                'scanner_activity': [
+                    {
+                        'address': scanner,
+                        'scan_requests_observed': count,
+                    }
+                    for scanner, count in sorted(
+                        observed['scanner_counts'].items(),
+                        key=lambda entry: (-entry[1], entry[0]),
+                    )
+                ],
+            })
+
+    target_only.sort(
+        key=lambda d: (-d['scan_requests_observed'], d['address'])
+    )
+
     devices = []
     for item in inventory.values():
         samples = item.pop('rssi_samples')
@@ -130,6 +232,38 @@ def main():
         for k in ('names', 'service_uuids_16', 'service_uuids_32', 'service_uuids_128',
                   'service_data', 'channels', 'pdu_types'):
             item[k] = sorted(item[k])
+        item['manufacturer_identifiers_resolved'] = [
+            {
+                **resolve_identifier(company_id, 16, company_registry),
+                'namespace': 'company_identifier',
+            }
+            for company_id in sorted({
+                entry['company_id']
+                for entry in item['manufacturer_data']
+            })
+        ]
+
+        item['service_uuids_16_resolved'] = [
+            resolve_uuid16(value, service_registry, member_registry)
+            for value in item['service_uuids_16']
+        ]
+
+        item['profile'] = {
+            'advertising_pdu_types': [
+                {
+                    'code': code,
+                    'name': PDU_NAMES.get(code, 'UNKNOWN'),
+                }
+                for code in item['pdu_types']
+            ],
+            'scan_requests_observed': item['scan_requests_observed'],
+            'evidence': {
+                'source': 'crc_valid_passive_capture',
+                'gatt_enumerated': False,
+                'physical_identity_confirmed': False,
+            },
+        }
+
         devices.append(item)
     devices.sort(key=lambda d: (-d['packet_count'], d['address']))
     sidecar = args.input.with_suffix('.json')
@@ -144,12 +278,43 @@ def main():
             warnings.append('Unable to parse capture metadata sidecar')
     else:
         warnings.append('No capture metadata sidecar; PCAP timing not validated')
-    report = dict(schema_version='0.1.1', source_pcap=str(args.input.resolve()),
+    registry_metadata = {
+        name: {
+            'source': registry.get('source'),
+            'source_commit': registry.get('source_commit'),
+            'source_file': registry.get('source_file'),
+            'generated_at_utc': registry.get('generated_at_utc'),
+        }
+        for name, registry in (
+            ('company_identifiers', company_registry),
+            ('service_uuids', service_registry),
+            ('member_uuids', member_registry),
+        )
+    }
+
+    report = dict(identifier_registries=registry_metadata,
+                  schema_version='0.5.0', source_pcap=str(args.input.resolve()),
                   source_metadata=str(sidecar.resolve()) if sidecar.is_file() else None,
                   advertiser_count=len(devices), skipped_ambiguous_packets=skipped,
                   integrity=dict(scope='frames with advertising address', **integrity),
-                  warnings=warnings, advertisers=devices)
-    print(f'K’amal BLE inventory: {len(devices)} advertisers | {sum(d["packet_count"] for d in devices)} CRC-valid packets')
+                  warnings=warnings, advertisers=devices,
+                  scan_request_targets=target_only)
+    advertiser_packets = sum(d['packet_count'] for d in devices)
+    associated_requests = sum(d['scan_requests_observed'] for d in devices)
+    target_only_requests = sum(
+        d['scan_requests_observed'] for d in target_only
+    )
+
+    print(
+        f'K’amal BLE inventory: {len(devices)} advertisers | '
+        f'{advertiser_packets} CRC-valid advertiser-originated packets'
+    )
+    print(
+        f'Scan requests: {associated_requests + target_only_requests} total | '
+        f'{associated_requests} associated with advertisers | '
+        f'{target_only_requests} targeting unconfirmed advertisers '
+        f'({len(target_only)} target records)'
+    )
     print(f'CRC integrity (advertising-address frames): {integrity["valid"]} valid | {integrity["invalid"]} invalid | {integrity["unknown"]} unknown')
     limit = len(devices) if args.all else (args.limit if args.limit is not None else 20)
     displayed = devices[:limit]

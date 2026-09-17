@@ -316,14 +316,13 @@ capture_ble() {
     # Execute
     # --------------------------------------------------------
 
-    if [[ -n "$duration" ]]; then
+    local start_ns
+    local end_ns
+    local wall_duration
 
-        #
-        # nrfutil needs SIGINT so it can finalize the PCAP.
-        #
-        # Give it five additional seconds before forcing
-        # termination.
-        #
+    start_ns="$(date +%s%N)"
+
+    if [[ -n "$duration" ]]; then
 
         set +e
 
@@ -337,11 +336,6 @@ capture_ble() {
 
         set -e
 
-        #
-        # GNU timeout returns 124 when the requested timeout
-        # occurs. That's expected for a duration-limited capture.
-        #
-
         if [[ "$rc" -ne 0 && "$rc" -ne 124 ]]; then
             die "BLE capture failed with exit code $rc"
         fi
@@ -352,6 +346,15 @@ capture_ble() {
 
     fi
 
+    end_ns="$(date +%s%N)"
+
+    wall_duration="$(
+        awk \
+            -v start="$start_ns" \
+            -v end="$end_ns" \
+            'BEGIN { printf "%.3f", (end - start) / 1000000000 }'
+    )"
+
     # --------------------------------------------------------
     # Validate capture
     # --------------------------------------------------------
@@ -361,11 +364,50 @@ capture_ble() {
 
     printf "\nCapture complete.\n\n"
 
+    printf "Wall duration:       %s seconds\n" "$wall_duration"
+
     if command -v capinfos >/dev/null 2>&1; then
 
-        capinfos "$output" |
-            grep -E \
-                'File name:|File encapsulation:|Number of packets:|File size:|Capture duration:|SHA256:'
+        packet_count="$(
+            capinfos "$output" |
+            awk -F: '/Number of packets:/ {
+                gsub(/^[ \t]+/, "", $2)
+                print $2
+                exit
+            }'
+        )"
+
+        pcap_duration="$(
+            capinfos "$output" |
+            awk -F: '/Capture duration:/ {
+                gsub(/^[ \t]+/, "", $2)
+                print $2
+                exit
+            }'
+        )"
+
+        file_size="$(
+            capinfos "$output" |
+            awk -F: '/File size:/ {
+                gsub(/^[ \t]+/, "", $2)
+                print $2
+                exit
+            }'
+        )"
+
+        sha256="$(
+            capinfos "$output" |
+            awk -F: '/SHA256:/ {
+                gsub(/^[ \t]+/, "", $2)
+                print $2
+                exit
+            }'
+        )"
+
+        printf "Packets:             %s\n" "${packet_count:-unknown}"
+        printf "File size:           %s\n" "${file_size:-unknown}"
+        printf "PCAP timestamp span: %s\n" "${pcap_duration:-unknown}"
+        printf "SHA256:              %s\n" "${sha256:-unknown}"
 
     else
 
@@ -374,7 +416,6 @@ capture_ble() {
     fi
 
     printf "\nSaved:\n%s\n" "$output"
-}
 
 # ------------------------------------------------------------
 # Main dispatcher

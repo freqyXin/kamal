@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+#
+# K'amal Radio Capture Interface
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Maxine Filcher
+#
+
+set -Eeuo pipefail
+
+VERSION="0.1.0"
+
+CAPTURE_ROOT="${KAMAL_CAPTURE_ROOT:-$HOME/captures}"
+BLE_DEVICE="/dev/kamal-ble-sniffer"
+
+# ------------------------------------------------------------
+# Utility functions
+# ------------------------------------------------------------
+
+log() {
+    printf '[Kamal] %s\n' "$*"
+}
+
+warn() {
+    printf '[Kamal] WARNING: %s\n' "$*" >&2
+}
+
+die() {
+    printf '[Kamal] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 ||
+        die "Required command not found: $1"
+}
+
+usage() {
+    cat <<EOF
+K'amal Capture v${VERSION}
+
+Usage:
+    kamal-capture list
+    kamal-capture ble [options]
+
+BLE options:
+    --duration SECONDS
+        Stop capture after the specified duration.
+
+    --name NAME
+        Follow a BLE device by advertised name.
+
+    --address ADDRESS
+        Follow a BLE device by address.
+
+    --output FILE
+        Write capture to the specified file.
+
+    --advertising-only
+        Capture advertising traffic only.
+
+    -h, --help
+        Show this help.
+
+Examples:
+    kamal-capture list
+
+    kamal-capture ble
+
+    kamal-capture ble --duration 60
+
+    kamal-capture ble --name Sensor
+
+    kamal-capture ble --address AA:BB:CC:DD:EE:FF
+
+    kamal-capture ble --duration 300 --output test.pcap
+EOF
+}
+
+# ------------------------------------------------------------
+# Radio inventory
+# ------------------------------------------------------------
+
+radio_list() {
+
+    printf "K'amal Radio Inventory\n"
+    printf "======================\n\n"
+
+    printf "BLE Control\n"
+
+    if command -v bluetoothctl >/dev/null 2>&1; then
+        controller="$(bluetoothctl list 2>/dev/null | head -1 || true)"
+
+        if [[ -n "$controller" ]]; then
+            printf "  %-12s %s\n" "Status:" "READY"
+            printf "  %-12s %s\n" "Controller:" "$controller"
+        else
+            printf "  %-12s %s\n" "Status:" "NOT FOUND"
+        fi
+    else
+        printf "  %-12s %s\n" "Status:" "UNKNOWN"
+    fi
+
+    printf "\nBLE Capture\n"
+
+    if [[ -e "$BLE_DEVICE" ]]; then
+
+        resolved="$(readlink -e "$BLE_DEVICE" || true)"
+
+        printf "  %-12s %s\n" "Status:" "READY"
+        printf "  %-12s %s\n" "Device:" "$BLE_DEVICE"
+        printf "  %-12s %s\n" "Port:" "${resolved:-unknown}"
+
+    else
+
+        printf "  %-12s %s\n" "Status:" "NOT FOUND"
+
+    fi
+
+    printf "\nCellular\n"
+
+    if [[ -d /sys/class/net/wwan0 ]]; then
+
+        state="$(cat /sys/class/net/wwan0/operstate 2>/dev/null || true)"
+
+        printf "  %-12s %s\n" "Interface:" "wwan0"
+        printf "  %-12s %s\n" "State:" "${state:-unknown}"
+
+    else
+
+        printf "  %-12s %s\n" "Status:" "NOT FOUND"
+
+    fi
+}
+
+# ------------------------------------------------------------
+# BLE capture
+# ------------------------------------------------------------
+
+capture_ble() {
+
+    local duration=""
+    local target_name=""
+    local target_address=""
+    local output=""
+    local advertising_only=false
+
+    while [[ $# -gt 0 ]]; do
+
+        case "$1" in
+
+            --duration)
+                [[ $# -ge 2 ]] ||
+                    die "--duration requires a value."
+
+                duration="$2"
+                shift 2
+                ;;
+
+            --name)
+                [[ $# -ge 2 ]] ||
+                    die "--name requires a value."
+
+                target_name="$2"
+                shift 2
+                ;;
+
+            --address)
+                [[ $# -ge 2 ]] ||
+                    die "--address requires a value."
+
+                target_address="$2"
+                shift 2
+                ;;
+
+            --output)
+                [[ $# -ge 2 ]] ||
+                    die "--output requires a value."
+
+                output="$2"
+                shift 2
+                ;;
+
+            --advertising-only)
+                advertising_only=true
+                shift
+                ;;
+
+            -h|--help)
+                usage
+                exit 0
+                ;;
+
+            *)
+                die "Unknown BLE option: $1"
+                ;;
+
+        esac
+    done
+
+    require_command nrfutil
+
+    # --------------------------------------------------------
+    # Validate radio
+    # --------------------------------------------------------
+
+    [[ -e "$BLE_DEVICE" ]] ||
+        die "BLE capture radio not found: $BLE_DEVICE"
+
+    local port
+
+    port="$(readlink -e "$BLE_DEVICE")"
+
+    [[ -n "$port" ]] ||
+        die "Unable to resolve $BLE_DEVICE"
+
+    # --------------------------------------------------------
+    # Validate arguments
+    # --------------------------------------------------------
+
+    if [[ -n "$duration" ]] &&
+       ! [[ "$duration" =~ ^[0-9]+$ ]] ; then
+
+        die "Duration must be an integer number of seconds."
+
+    fi
+
+    if [[ -n "$target_name" && -n "$target_address" ]]; then
+        die "--name and --address cannot currently be used together."
+    fi
+
+    # --------------------------------------------------------
+    # Generate capture path
+    # --------------------------------------------------------
+
+    local date_dir
+    local timestamp
+    local hostname
+
+    date_dir="$(date +%Y-%m-%d)"
+    timestamp="$(date +%H%M%S)"
+    hostname="$(hostname -s)"
+
+    local capture_dir="${CAPTURE_ROOT}/ble/${date_dir}"
+
+    mkdir -p "$capture_dir"
+
+    if [[ -z "$output" ]]; then
+
+        output="${capture_dir}/${hostname}_ble_${timestamp}.pcap"
+
+    elif [[ "$output" != /* ]]; then
+
+        output="${PWD}/${output}"
+
+    fi
+
+    # Don't silently overwrite evidence.
+    [[ ! -e "$output" ]] ||
+        die "Output file already exists: $output"
+
+    # --------------------------------------------------------
+    # Construct Nordic command
+    # --------------------------------------------------------
+
+    local -a cmd
+
+    cmd=(
+        nrfutil
+        ble-sniffer
+        sniff
+        --port "$port"
+        --output-pcap-file "$output"
+    )
+
+    if [[ -n "$target_name" ]]; then
+        cmd+=(--follow-by-name "$target_name")
+    fi
+
+    if [[ -n "$target_address" ]]; then
+        cmd+=(--follow-by-address "$target_address")
+    fi
+
+    if [[ "$advertising_only" == true ]]; then
+        cmd+=(--advertising-only)
+    fi
+
+    # --------------------------------------------------------
+    # Start capture
+    # --------------------------------------------------------
+
+    printf "\nK'amal BLE Capture\n"
+    printf "==================\n\n"
+
+    printf "Radio:       %s\n" "$BLE_DEVICE"
+    printf "Port:        %s\n" "$port"
+    printf "Output:      %s\n" "$output"
+
+    if [[ -n "$duration" ]]; then
+        printf "Duration:    %s seconds\n" "$duration"
+    else
+        printf "Duration:    until Ctrl-C\n"
+    fi
+
+    if [[ -n "$target_name" ]]; then
+        printf "Target name: %s\n" "$target_name"
+    fi
+
+    if [[ -n "$target_address" ]]; then
+        printf "Target addr: %s\n" "$target_address"
+    fi
+
+    printf "\n"
+
+    # --------------------------------------------------------
+    # Execute
+    # --------------------------------------------------------
+
+    if [[ -n "$duration" ]]; then
+
+        #
+        # nrfutil needs SIGINT so it can finalize the PCAP.
+        #
+        # Give it five additional seconds before forcing
+        # termination.
+        #
+
+        set +e
+
+        timeout \
+            --signal=INT \
+            --kill-after=5s \
+            "$duration" \
+            "${cmd[@]}"
+
+        rc=$?
+
+        set -e
+
+        #
+        # GNU timeout returns 124 when the requested timeout
+        # occurs. That's expected for a duration-limited capture.
+        #
+
+        if [[ "$rc" -ne 0 && "$rc" -ne 124 ]]; then
+            die "BLE capture failed with exit code $rc"
+        fi
+
+    else
+
+        "${cmd[@]}"
+
+    fi
+
+    # --------------------------------------------------------
+    # Validate capture
+    # --------------------------------------------------------
+
+    [[ -s "$output" ]] ||
+        die "Capture file was not created or is empty."
+
+    printf "\nCapture complete.\n\n"
+
+    if command -v capinfos >/dev/null 2>&1; then
+
+        capinfos "$output" |
+            grep -E \
+                'File name:|File encapsulation:|Number of packets:|File size:|Capture duration:|SHA256:'
+
+    else
+
+        ls -lh "$output"
+
+    fi
+
+    printf "\nSaved:\n%s\n" "$output"
+}
+
+# ------------------------------------------------------------
+# Main dispatcher
+# ------------------------------------------------------------
+
+main() {
+
+    [[ $# -gt 0 ]] || {
+        usage
+        exit 1
+    }
+
+    case "$1" in
+
+        list)
+            shift
+            radio_list "$@"
+            ;;
+
+        ble)
+            shift
+            capture_ble "$@"
+            ;;
+
+        version|--version)
+            printf "kamal-capture %s\n" "$VERSION"
+            ;;
+
+        help|-h|--help)
+            usage
+            ;;
+
+        *)
+            die "Unknown capture type: $1"
+            ;;
+
+    esac
+}
+
+main "$@"

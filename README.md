@@ -158,7 +158,7 @@ For capture hardware setup, see
 
 ### Releases
 
-See [v0.7.0 release notes](docs/releases/v0.7.0.md).
+See [v0.8.0 release notes](docs/releases/v0.8.0.md) and [v0.7.0 release notes](docs/releases/v0.7.0.md).
 
 ## Project Goals
 

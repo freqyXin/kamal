@@ -179,20 +179,41 @@ def parse_args(argv=None):
     targeting.add_argument("--all-discovered", action="store_true")
     survey.add_argument("--acknowledge-scope", action="store_true")
     survey.add_argument("--adapter", default="hci0")
+    survey.add_argument(
+        "--discover-seconds",
+        type=float,
+        default=30.0,
+        help="Discovery duration in seconds (default: 30, max: 60)",
+    )
+    survey.add_argument(
+        "--max-devices",
+        type=int,
+        default=50,
+        help="Maximum permitted devices to queue (default: 50, max: 100)",
+    )
     survey.add_argument("--output-dir", type=Path, required=True)
 
     return parser.parse_args(argv)
 
 
-async def async_main():
-    args = parse_args()
+async def async_main(argv=None):
+    args = parse_args(argv)
 
     if args.command == "survey":
-        from kamal.gatt_survey import SurveyTargetPolicy
+        from kamal.gatt_survey import (
+            SurveyTargetPolicy,
+            discover_target_queue,
+            validate_discovery_settings,
+        )
 
         try:
+            validate_discovery_settings(
+                args.discover_seconds,
+                args.max_devices,
+            )
+
             if args.all_discovered:
-                SurveyTargetPolicy(
+                policy = SurveyTargetPolicy(
                     mode="all_discovered",
                     acknowledge_scope=args.acknowledge_scope,
                 )
@@ -201,22 +222,76 @@ async def async_main():
                     raise ValueError(
                         "Scope acknowledgment is only valid for all-discovered mode"
                     )
-                targets = json.loads(args.allowlist.read_text(encoding="utf-8"))
+
+                targets = json.loads(
+                    args.allowlist.read_text(encoding="utf-8")
+                )
+
                 if not isinstance(targets, list):
                     raise ValueError("Allowlist must be a JSON array")
-                SurveyTargetPolicy(
+
+                policy = SurveyTargetPolicy(
                     mode="allowlist",
                     allowlist=frozenset(targets),
                 )
+
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+
         except (OSError, ValueError, TypeError) as exc:
             print(f"Survey policy error: {exc}", file=sys.stderr)
             return 8
 
-        print(
-            "Survey mode is not implemented yet; no Bluetooth operations performed.",
-            file=sys.stderr,
-        )
-        return 9
+        try:
+            queue = await discover_target_queue(
+                policy=policy,
+                adapter=args.adapter,
+                discover_seconds=args.discover_seconds,
+                max_devices=args.max_devices,
+            )
+        except Exception as exc:
+            print(
+                f"Survey discovery error: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 10
+
+        manifest = {
+            "schema_version": "0.10.0",
+            "type": "kamal_gatt_survey_manifest",
+            "phase": "discovery_only",
+            "adapter": args.adapter,
+            "policy": {
+                "mode": policy.mode,
+                "scope_acknowledged": policy.acknowledge_scope,
+                "allowlist_count": (
+                    len(policy.allowlist)
+                    if policy.allowlist is not None
+                    else None
+                ),
+            },
+            "limits": {
+                "discover_seconds": args.discover_seconds,
+                "max_devices": args.max_devices,
+            },
+            "discovery": {
+                "target_count": len(queue),
+                "targets": queue,
+            },
+        }
+
+        manifest_path = args.output_dir / "survey-manifest.json"
+
+        try:
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            print(f"Survey output error: {exc}", file=sys.stderr)
+            return 11
+
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
 
     try:
         registries, provenance = load_gatt_registries()

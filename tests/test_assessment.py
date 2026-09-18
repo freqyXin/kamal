@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from report_fixtures import active_report, passive_report
+
 from kamal.assessment import (
     SCHEMA_VERSION,
     build_assessment,
@@ -25,11 +27,7 @@ class AssessmentTests(unittest.TestCase):
         return path
 
     def test_import_passive_report(self):
-        path = self.write_report("passive.json", {
-            "schema_version": "0.6.0",
-            "source_pcap": "/tmp/capture.pcap",
-            "advertisers": [],
-        })
+        path = self.write_report("passive.json", passive_report())
 
         source = load_source(path)
 
@@ -38,31 +36,19 @@ class AssessmentTests(unittest.TestCase):
         self.assertTrue(source["source_id"].startswith("sha256:"))
 
     def test_import_active_report(self):
-        path = self.write_report("active.json", {
-            "schema_version": "0.7.0",
-            "evidence_type": "active_gatt",
-            "target": "AA:BB:CC:DD:EE:FF",
-        })
+        path = self.write_report("active.json", active_report())
 
         source = load_source(path)
 
         self.assertEqual(source["evidence_type"], "active_gatt")
 
     def test_preserves_reports_without_correlating(self):
-        passive = load_source(self.write_report("passive.json", {
-            "schema_version": "0.6.0",
-            "source_pcap": "/tmp/capture.pcap",
-            "advertisers": [{
-                "address": "AA:BB:CC:DD:EE:FF",
-                "address_type": "random",
-            }],
-        }))
+        passive = load_source(self.write_report("passive.json", passive_report(devices=[{
+            "address": "AA:BB:CC:DD:EE:FF",
+            "address_type": "random",
+        }])))
 
-        active = load_source(self.write_report("active.json", {
-            "schema_version": "0.7.0",
-            "evidence_type": "active_gatt",
-            "target": "AA:BB:CC:DD:EE:FF",
-        }))
+        active = load_source(self.write_report("active.json", active_report()))
 
         assessment = build_assessment(
             [active, passive],
@@ -86,11 +72,7 @@ class AssessmentTests(unittest.TestCase):
         )
 
     def test_rejects_duplicate_source(self):
-        source = load_source(self.write_report("passive.json", {
-            "schema_version": "0.6.0",
-            "source_pcap": "/tmp/capture.pcap",
-            "advertisers": [],
-        }))
+        source = load_source(self.write_report("passive.json", passive_report()))
 
         with self.assertRaisesRegex(ValueError, "Duplicate source"):
             build_assessment(

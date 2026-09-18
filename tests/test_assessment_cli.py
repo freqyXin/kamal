@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from report_fixtures import active_report, passive_report
+
 
 ROOT = Path(__file__).resolve().parent.parent
 CLI = ROOT / "bin" / "kamal-assess"
@@ -34,18 +36,10 @@ class AssessmentCLITests(unittest.TestCase):
         )
 
     def passive_report(self):
-        return {
-            "schema_version": "0.6.0",
-            "source_pcap": "capture.pcap",
-            "advertisers": [],
-        }
+        return passive_report()
 
     def active_report(self):
-        return {
-            "schema_version": "0.7.0",
-            "evidence_type": "active_gatt",
-            "target": "AA:BB:CC:DD:EE:FF",
-        }
+        return active_report()
 
     def test_combines_reports_without_relationships(self):
         passive = self.write_report(

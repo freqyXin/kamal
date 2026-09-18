@@ -8,7 +8,7 @@ from pathlib import Path
 from kamal.report_validation import validate_report
 
 
-SCHEMA_VERSION = "0.8.0"
+SCHEMA_VERSION = "0.9.0"
 
 SUPPORTED_REPORTS = {
     ("passive_ble", "0.6.0"),
@@ -118,9 +118,11 @@ def build_assessment(sources, *, assessment_id, created_at_utc=None):
         "sources": source_records,
         "observations": observations,
         "relationships": [],
+        "findings": [],
         "integrity": {
             "source_count": len(source_records),
             "observation_count": len(observations),
+            "finding_count": 0,
             "warnings": [],
         },
     }

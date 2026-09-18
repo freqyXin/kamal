@@ -66,7 +66,7 @@ class AssessmentCLITests(unittest.TestCase):
         self.assertEqual(
             assessment["assessment_id"], "integration-test"
         )
-        self.assertEqual(assessment["schema_version"], "0.8.0")
+        self.assertEqual(assessment["schema_version"], "0.9.0")
         self.assertEqual(len(assessment["sources"]), 2)
         self.assertEqual(len(assessment["observations"]), 2)
         self.assertEqual(assessment["relationships"], [])

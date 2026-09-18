@@ -60,6 +60,8 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(len(assessment["sources"]), 2)
         self.assertEqual(len(assessment["observations"]), 2)
         self.assertEqual(assessment["relationships"], [])
+        self.assertEqual(assessment["findings"], [])
+        self.assertEqual(assessment["integrity"]["finding_count"], 0)
 
         reports = [
             observation["report"]

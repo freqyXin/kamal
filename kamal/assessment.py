@@ -8,6 +8,7 @@ from pathlib import Path
 
 from kamal.report_validation import validate_report
 from kamal.findings import validate_findings
+from kamal.ble_intelligence import analyze_gatt_observation
 
 
 SCHEMA_VERSION = "0.9.0"
@@ -116,8 +117,13 @@ def build_assessment(sources, *, assessment_id, created_at_utc=None, findings=No
         item["observation_id"]: item["report"]
         for item in observations
     }
+    if findings is None:
+        findings = []
+        for observation in observations:
+            findings.extend(analyze_gatt_observation(observation))
+
     validated_findings = validate_findings(
-        [] if findings is None else findings,
+        findings,
         observation_reports,
     )
 

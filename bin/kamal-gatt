@@ -129,6 +129,7 @@ async def inspect_discovered_device(
     }
 
     report["connection"]["attempted"] = True
+    report["connection"]["client_created"] = False
 
     try:
         client = BleakClient(
@@ -140,6 +141,7 @@ async def inspect_discovered_device(
         report["connection"]["error"] = f"{type(exc).__name__}: {exc}"
         return report, 4
 
+    report["connection"]["client_created"] = True
     status = 0
 
     try:
@@ -225,6 +227,17 @@ def parse_args(argv=None):
         default=50,
         help="Maximum permitted devices to queue (default: 50, max: 100)",
     )
+    survey.add_argument(
+        "--execute",
+        action="store_true",
+        help="Perform active GATT metadata enumeration after discovery",
+    )
+    survey.add_argument(
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="Per-device connection and disconnect timeout in seconds",
+    )
     survey.add_argument("--output-dir", type=Path, required=True)
 
     return parser.parse_args(argv)
@@ -233,11 +246,18 @@ def parse_args(argv=None):
 async def async_main(argv=None):
     args = parse_args(argv)
 
+
     if args.command == "survey":
         from kamal.gatt_survey import (
             SurveyTargetPolicy,
+            SurveyAbortedError,
+            atomic_json_write,
+            build_execution_manifest,
             discover_target_queue,
+            discover_target_records,
+            run_survey_records,
             validate_discovery_settings,
+            validate_survey_timeout,
         )
 
         try:
@@ -245,6 +265,7 @@ async def async_main(argv=None):
                 args.discover_seconds,
                 args.max_devices,
             )
+            validate_survey_timeout(args.timeout)
 
             if args.all_discovered:
                 policy = SurveyTargetPolicy(
@@ -254,13 +275,13 @@ async def async_main(argv=None):
             else:
                 if args.acknowledge_scope:
                     raise ValueError(
-                        "Scope acknowledgment is only valid for all-discovered mode"
+                        "Scope acknowledgment is only valid "
+                        "for all-discovered mode"
                     )
 
                 targets = json.loads(
                     args.allowlist.read_text(encoding="utf-8")
                 )
-
                 if not isinstance(targets, list):
                     raise ValueError("Allowlist must be a JSON array")
 
@@ -269,19 +290,52 @@ async def async_main(argv=None):
                     allowlist=frozenset(targets),
                 )
 
-            args.output_dir.mkdir(parents=True, exist_ok=True)
+            # Active execution must never reuse an existing output directory.
+            # Discovery-only retains its previous directory behavior.
+            if args.execute:
+                if args.output_dir.exists():
+                    raise ValueError(
+                        "Active survey requires a new output directory"
+                    )
+                args.output_dir.mkdir(parents=True, exist_ok=False)
+            else:
+                args.output_dir.mkdir(parents=True, exist_ok=True)
 
         except (OSError, ValueError, TypeError) as exc:
             print(f"Survey policy error: {exc}", file=sys.stderr)
             return 8
 
+        registries = None
+        provenance = None
+
+        if args.execute:
+            try:
+                registries, provenance = load_gatt_registries()
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                print(
+                    f"GATT registry error: {exc}. "
+                    "See data/bluetooth/README.md.",
+                    file=sys.stderr,
+                )
+                return 7
+
         try:
-            discovery = await discover_target_queue(
-                policy=policy,
-                adapter=args.adapter,
-                discover_seconds=args.discover_seconds,
-                max_devices=args.max_devices,
-            )
+            if args.execute:
+                discovery, records = await discover_target_records(
+                    policy=policy,
+                    adapter=args.adapter,
+                    discover_seconds=args.discover_seconds,
+                    max_devices=args.max_devices,
+                )
+            else:
+                discovery = await discover_target_queue(
+                    policy=policy,
+                    adapter=args.adapter,
+                    discover_seconds=args.discover_seconds,
+                    max_devices=args.max_devices,
+                )
+                records = []
+
         except Exception as exc:
             print(
                 f"Survey discovery error: {type(exc).__name__}: {exc}",
@@ -292,7 +346,7 @@ async def async_main(argv=None):
         manifest = {
             "schema_version": "0.10.0",
             "type": "kamal_gatt_survey_manifest",
-            "phase": "discovery_only",
+            "phase": "executing" if args.execute else "discovery_only",
             "adapter": args.adapter,
             "policy": {
                 "mode": policy.mode,
@@ -306,22 +360,82 @@ async def async_main(argv=None):
             "limits": {
                 "discover_seconds": args.discover_seconds,
                 "max_devices": args.max_devices,
+                "timeout": args.timeout,
             },
             "discovery": discovery,
         }
 
         manifest_path = args.output_dir / "survey-manifest.json"
 
-        try:
-            manifest_path.write_text(
-                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
+        def checkpoint(outcomes, abort_error=None, final=False):
+            manifest["execution"] = build_execution_manifest(
+                len(records),
+                outcomes,
+                abort_error=abort_error,
             )
-        except OSError as exc:
+
+            if abort_error is not None:
+                manifest["phase"] = "aborted"
+            elif final:
+                manifest["phase"] = (
+                    "completed"
+                    if manifest["execution"]["complete"]
+                    else "stopped_unsafe"
+                )
+            else:
+                manifest["phase"] = "executing"
+
+            atomic_json_write(manifest_path, manifest)
+
+        try:
+            if not args.execute:
+                atomic_json_write(manifest_path, manifest)
+                print(json.dumps(manifest, indent=2, sort_keys=True))
+                return 0
+
+            # Initial checkpoint exists before the first connection.
+            checkpoint([])
+
+            async def inspect_record(record):
+                return await inspect_discovered_device(
+                    device=record["device"],
+                    adv=record["advertisement"],
+                    adapter=args.adapter,
+                    timeout=args.timeout,
+                    registries=registries,
+                    provenance=provenance,
+                )
+
+            try:
+                outcomes = await run_survey_records(
+                    records,
+                    inspect_record,
+                    output_dir=args.output_dir,
+                    on_outcome=checkpoint,
+                )
+            except SurveyAbortedError as exc:
+                checkpoint(exc.outcomes, abort_error=exc)
+                print(
+                    f"Survey aborted: {exc}",
+                    file=sys.stderr,
+                )
+                return 13
+
+            checkpoint(outcomes, final=True)
+
+        except (OSError, TypeError, ValueError) as exc:
             print(f"Survey output error: {exc}", file=sys.stderr)
             return 11
 
         print(json.dumps(manifest, indent=2, sort_keys=True))
+
+        execution = manifest["execution"]
+        if (
+            not execution["complete"]
+            or execution["failed_count"] != 0
+        ):
+            return 12
+
         return 0
 
     try:

@@ -1,6 +1,7 @@
 """Target selection policy for authorized BLE surveys."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -189,3 +190,241 @@ def summarize_discovery(discovered_addresses, policy, max_devices):
         "omitted_by_cap": len(permitted) - len(selected),
         "targets": selected,
     }
+
+
+class SurveyAbortedError(RuntimeError):
+    """Unexpected inspection failure with completed outcomes preserved."""
+
+    def __init__(self, address, outcomes, cause):
+        self.address = address
+        self.outcomes = list(outcomes)
+        self.cause = cause
+        super().__init__(
+            f"Survey aborted at {address}: "
+            f"{type(cause).__name__}: {cause}"
+        )
+
+
+
+async def run_survey_records(
+    records,
+    inspect,
+    output_dir=None,
+    on_outcome=None,
+):
+    """Inspect sequentially; persist and checkpoint before the next target."""
+    outcomes = []
+
+    for record in records:
+        address = record["address"]
+
+        try:
+            report, status = await inspect(record)
+        except Exception as exc:
+            raise SurveyAbortedError(address, outcomes, exc) from exc
+
+        try:
+            connection = report["connection"]
+            disconnect = report["disconnect"]
+
+            if not isinstance(connection, dict):
+                raise ValueError("Invalid connection lifecycle state")
+            if not isinstance(disconnect, dict):
+                raise ValueError("Invalid disconnect lifecycle state")
+
+            for key in ("attempted", "completed"):
+                if not isinstance(disconnect[key], bool):
+                    raise ValueError(f"Invalid disconnect {key} state")
+
+            if disconnect["completed"] and not disconnect["attempted"]:
+                raise ValueError("Disconnect completed without an attempt")
+
+            if not isinstance(connection.get("client_created"), bool):
+                raise ValueError("Missing or invalid client creation state")
+
+            if not isinstance(status, int) or isinstance(status, bool):
+                raise ValueError("Invalid inspection status")
+
+            if not isinstance(report, dict):
+                raise ValueError("Invalid evidence report")
+
+            if output_dir is not None:
+                destination = (
+                    Path(output_dir)
+                    / f"device-{len(outcomes) + 1:03d}.json"
+                )
+                if destination.exists():
+                    raise FileExistsError(
+                        f"Refusing to overwrite evidence: {destination}"
+                    )
+                atomic_json_write(destination, report)
+
+            outcome = {
+                "address": address,
+                "status": status,
+                "report": report,
+            }
+            outcomes.append(outcome)
+
+            if on_outcome is not None:
+                on_outcome(list(outcomes))
+
+        except Exception as exc:
+            raise SurveyAbortedError(address, outcomes, exc) from exc
+
+        if not cleanup_is_safe(report):
+            break
+
+    return outcomes
+
+
+
+def persist_survey_reports(outcomes, output_dir):
+    """Write one JSON evidence report per completed inspection."""
+    import json
+    from pathlib import Path
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    entries = []
+
+    for index, outcome in enumerate(outcomes, start=1):
+        filename = f"device-{index:03d}.json"
+        path = output_dir / filename
+
+        path.write_text(
+            json.dumps(
+                outcome["report"],
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        entries.append(
+            {
+                "address": outcome["address"],
+                "status": outcome["status"],
+                "report_path": filename,
+            }
+        )
+
+    return entries
+
+
+
+def summarize_survey_execution(target_count, outcomes):
+    """Summarize progress and conservatively classify unsafe cleanup."""
+    if target_count < 0 or len(outcomes) > target_count:
+        raise ValueError("Invalid survey execution counts")
+
+    inspected = len(outcomes)
+    successful = sum(item["status"] == 0 for item in outcomes)
+    stopped_unsafe = any(
+        not cleanup_is_safe(item["report"])
+        for item in outcomes
+    )
+
+    return {
+        "target_count": target_count,
+        "inspected_count": inspected,
+        "successful_count": successful,
+        "failed_count": inspected - successful,
+        "not_inspected_count": target_count - inspected,
+        "stopped_unsafe": stopped_unsafe,
+        "complete": inspected == target_count and not stopped_unsafe,
+    }
+
+
+def build_execution_manifest(target_count, outcomes, abort_error=None):
+    """Build serializable execution state for the survey manifest."""
+    summary = summarize_survey_execution(target_count, outcomes)
+
+    execution = {
+        **summary,
+        "aborted": abort_error is not None,
+        "abort": None,
+        "results": [
+            {
+                "address": outcome["address"],
+                "status": outcome["status"],
+                "report_path": f"device-{index:03d}.json",
+            }
+            for index, outcome in enumerate(outcomes, start=1)
+        ],
+    }
+
+    if abort_error is not None:
+        execution["complete"] = False
+        execution["abort"] = {
+            "address": abort_error.address,
+            "error": f"{type(abort_error.cause).__name__}: {abort_error.cause}",
+            "cleanup_confirmed": False,
+        }
+
+    return execution
+
+def atomic_json_write(path, payload):
+    """Atomically replace a JSON checkpoint without leaving partial JSON."""
+    import json
+    import os
+    import tempfile
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def cleanup_is_safe(report):
+    """Only a confirmed disconnect or pre-client failure permits continuation."""
+    connection = report["connection"]
+    disconnect = report["disconnect"]
+
+    constructor_failed = (
+        connection.get("client_created") is False
+        and connection.get("error") is not None
+        and disconnect["attempted"] is False
+        and disconnect["completed"] is False
+    )
+
+    disconnected = (
+        disconnect.get("attempted", True) is True
+        and disconnect.get("completed") is True
+        and disconnect.get("error") is None
+    )
+
+    return constructor_failed or disconnected
+
+
+def validate_survey_timeout(timeout):
+    import math
+
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or not 1 <= timeout <= 30
+    ):
+        raise ValueError("timeout must be between 1 and 30 seconds")

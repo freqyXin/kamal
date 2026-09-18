@@ -1,56 +1,59 @@
 import unittest
 
-from kamal.gatt_survey import (
-    SurveyTargetPolicy,
-    summarize_discovery,
-)
+from kamal.gatt_survey import summarize_survey_execution
 
 
 class SurveyAccountingTests(unittest.TestCase):
-    def test_counts_discovered_permitted_selected_and_omitted(self):
-        policy = SurveyTargetPolicy(
-            mode="allowlist",
-            allowlist=frozenset({
-                "AA:BB:CC:DD:EE:01",
-                "AA:BB:CC:DD:EE:02",
-                "AA:BB:CC:DD:EE:03",
-            }),
-        )
+    def test_complete_survey_with_recoverable_failure(self):
+        outcomes = [
+            {
+                "status": 0,
+                "report": {
+                    "connection": {"client_created": True},
+                    "disconnect": {"completed": True},
+                },
+            },
+            {
+                "status": 4,
+                "report": {
+                    "connection": {
+                        "client_created": False,
+                        "error": "BleakClient constructor failed",
+                    },
+                    "disconnect": {
+                        "attempted": False,
+                        "completed": False,
+                    },
+                },
+            },
+        ]
 
-        result = summarize_discovery(
-            [
-                "aa:bb:cc:dd:ee:01",
-                "AA:BB:CC:DD:EE:01",
-                "AA:BB:CC:DD:EE:02",
-                "AA:BB:CC:DD:EE:03",
-                "AA:BB:CC:DD:EE:99",
-            ],
-            policy,
-            max_devices=2,
-        )
+        summary = summarize_survey_execution(2, outcomes)
 
-        self.assertEqual(result["discovered_count"], 4)
-        self.assertEqual(result["permitted_count"], 3)
-        self.assertEqual(result["target_count"], 2)
-        self.assertEqual(result["omitted_by_cap"], 1)
-        self.assertEqual(
-            result["targets"],
-            ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"],
-        )
+        self.assertEqual(summary["inspected_count"], 2)
+        self.assertEqual(summary["successful_count"], 1)
+        self.assertEqual(summary["failed_count"], 1)
+        self.assertEqual(summary["not_inspected_count"], 0)
+        self.assertFalse(summary["stopped_unsafe"])
+        self.assertTrue(summary["complete"])
 
-    def test_empty_discovery(self):
-        policy = SurveyTargetPolicy(
-            mode="all_discovered",
-            acknowledge_scope=True,
-        )
+    def test_unsafe_disconnect_stops_survey(self):
+        outcomes = [
+            {
+                "status": 6,
+                "report": {
+                    "connection": {"client_created": True},
+                    "disconnect": {"completed": False},
+                },
+            }
+        ]
 
-        result = summarize_discovery([], policy, max_devices=10)
+        summary = summarize_survey_execution(3, outcomes)
 
-        self.assertEqual(result["discovered_count"], 0)
-        self.assertEqual(result["permitted_count"], 0)
-        self.assertEqual(result["target_count"], 0)
-        self.assertEqual(result["omitted_by_cap"], 0)
-        self.assertEqual(result["targets"], [])
+        self.assertEqual(summary["inspected_count"], 1)
+        self.assertEqual(summary["not_inspected_count"], 2)
+        self.assertTrue(summary["stopped_unsafe"])
+        self.assertFalse(summary["complete"])
 
 
 if __name__ == "__main__":

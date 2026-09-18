@@ -53,10 +53,16 @@ class GattSurveyCLITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             output_dir = Path(tempdir) / "results"
 
-            fake_discovery = AsyncMock(return_value=[
-                "AA:BB:CC:DD:EE:01",
-                "AA:BB:CC:DD:EE:02",
-            ])
+            fake_discovery = AsyncMock(return_value={
+                "discovered_count": 3,
+                "permitted_count": 3,
+                "target_count": 2,
+                "omitted_by_cap": 1,
+                "targets": [
+                    "AA:BB:CC:DD:EE:01",
+                    "AA:BB:CC:DD:EE:02",
+                ],
+            })
 
             with patch(
                 "kamal.gatt_survey.discover_target_queue",
@@ -111,9 +117,13 @@ class GattSurveyCLITests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            fake_discovery = AsyncMock(
-                return_value=["AA:BB:CC:DD:EE:FF"]
-            )
+            fake_discovery = AsyncMock(return_value={
+                "discovered_count": 2,
+                "permitted_count": 1,
+                "target_count": 1,
+                "omitted_by_cap": 0,
+                "targets": ["AA:BB:CC:DD:EE:FF"],
+            })
 
             with patch(
                 "kamal.gatt_survey.discover_target_queue",

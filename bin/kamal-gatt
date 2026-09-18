@@ -242,7 +242,7 @@ async def async_main(argv=None):
             return 8
 
         try:
-            queue = await discover_target_queue(
+            discovery = await discover_target_queue(
                 policy=policy,
                 adapter=args.adapter,
                 discover_seconds=args.discover_seconds,
@@ -273,10 +273,7 @@ async def async_main(argv=None):
                 "discover_seconds": args.discover_seconds,
                 "max_devices": args.max_devices,
             },
-            "discovery": {
-                "target_count": len(queue),
-                "targets": queue,
-            },
+            "discovery": discovery,
         }
 
         manifest_path = args.output_dir / "survey-manifest.json"

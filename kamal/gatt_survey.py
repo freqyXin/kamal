@@ -120,8 +120,37 @@ async def discover_target_queue(
         bluez={"adapter": adapter},
     )
 
-    return build_target_queue(
+    return summarize_discovery(
         discovered.keys(),
         policy,
         max_devices,
     )
+
+
+def summarize_discovery(discovered_addresses, policy, max_devices):
+    """Account for discovery, scope filtering, and the selection cap."""
+    if not isinstance(policy, SurveyTargetPolicy):
+        raise TypeError("policy must be a SurveyTargetPolicy")
+
+    # Validate the cap even when discovery returns no devices.
+    build_target_queue([], policy, max_devices)
+
+    unique = {
+        address.upper()
+        for address in discovered_addresses
+        if isinstance(address, str) and address.strip()
+    }
+
+    permitted = {
+        address for address in unique if policy.permits(address)
+    }
+
+    selected = build_target_queue(permitted, policy, max_devices)
+
+    return {
+        "discovered_count": len(unique),
+        "permitted_count": len(permitted),
+        "target_count": len(selected),
+        "omitted_by_cap": len(permitted) - len(selected),
+        "targets": selected,
+    }

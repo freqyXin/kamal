@@ -48,9 +48,13 @@ class SurveyDiscoveryTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            queue,
+            queue["targets"],
             ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"],
         )
+        self.assertEqual(queue["discovered_count"], 3)
+        self.assertEqual(queue["permitted_count"], 2)
+        self.assertEqual(queue["target_count"], 2)
+        self.assertEqual(queue["omitted_by_cap"], 0)
         self.assertEqual(len(FakeScanner.calls), 1)
         self.assertEqual(
             FakeScanner.calls[0],
@@ -63,7 +67,11 @@ class SurveyDiscoveryTests(unittest.TestCase):
 
     def test_applies_device_cap(self):
         queue = self.run_discovery(max_devices=1)
-        self.assertEqual(queue, ["AA:BB:CC:DD:EE:01"])
+        self.assertEqual(queue["targets"], ["AA:BB:CC:DD:EE:01"])
+        self.assertEqual(queue["discovered_count"], 3)
+        self.assertEqual(queue["permitted_count"], 2)
+        self.assertEqual(queue["target_count"], 1)
+        self.assertEqual(queue["omitted_by_cap"], 1)
 
     def test_rejects_zero_duration_before_scanning(self):
         with self.assertRaisesRegex(ValueError, "discover_seconds"):

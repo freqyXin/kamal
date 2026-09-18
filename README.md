@@ -140,6 +140,12 @@ It does not explicitly read or write characteristic values,
 subscribe to notifications, or request pairing. GATT discovery
 may involve protocol-level ATT reads.
 
+### Offline assessments
+
+Combine existing passive BLE and active GATT reports into an offline assessment.
+
+See the [assessment guide](docs/assessment.md) for usage, provenance, validation, and limitations.
+
 ### Identifier registries
 
 Generate the Bluetooth SIG identifier registries locally before

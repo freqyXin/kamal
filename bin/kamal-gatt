@@ -144,7 +144,10 @@ async def inspect_discovered_device(
 
     try:
         try:
-            await client.connect()
+            await asyncio.wait_for(
+                client.connect(),
+                timeout=timeout,
+            )
             report["connection"]["connected"] = client.is_connected
 
             if not client.is_connected:
@@ -172,7 +175,10 @@ async def inspect_discovered_device(
         report["disconnect"]["attempted"] = True
 
         try:
-            await client.disconnect()
+            await asyncio.wait_for(
+                client.disconnect(),
+                timeout=timeout,
+            )
             report["disconnect"]["completed"] = not client.is_connected
 
             if not report["disconnect"]["completed"]:

@@ -1,11 +1,13 @@
 """Offline assessment construction from existing K'amal reports."""
 
 import hashlib
+from copy import deepcopy
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from kamal.report_validation import validate_report
+from kamal.findings import validate_findings
 
 
 SCHEMA_VERSION = "0.9.0"
@@ -71,7 +73,7 @@ def load_source(path):
     }
 
 
-def build_assessment(sources, *, assessment_id, created_at_utc=None):
+def build_assessment(sources, *, assessment_id, created_at_utc=None, findings=None):
     """Build an assessment without merging or modifying source evidence."""
 
     if not assessment_id or not assessment_id.strip():
@@ -110,6 +112,14 @@ def build_assessment(sources, *, assessment_id, created_at_utc=None):
 
     source_records.sort(key=lambda item: item["source_id"])
     observations.sort(key=lambda item: item["observation_id"])
+    observation_reports = {
+        item["observation_id"]: item["report"]
+        for item in observations
+    }
+    validated_findings = validate_findings(
+        [] if findings is None else findings,
+        observation_reports,
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -118,11 +128,11 @@ def build_assessment(sources, *, assessment_id, created_at_utc=None):
         "sources": source_records,
         "observations": observations,
         "relationships": [],
-        "findings": [],
+        "findings": deepcopy(validated_findings),
         "integrity": {
             "source_count": len(source_records),
             "observation_count": len(observations),
-            "finding_count": 0,
+            "finding_count": len(validated_findings),
             "warnings": [],
         },
     }

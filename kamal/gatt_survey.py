@@ -93,15 +93,15 @@ def validate_discovery_settings(discover_seconds, max_devices):
         raise ValueError("max_devices must be between 1 and 100")
 
 
-async def discover_target_queue(
+async def discover_target_records(
     *,
     policy: SurveyTargetPolicy,
     adapter: str,
     discover_seconds: float = 30,
     max_devices: int = 50,
     scanner=None,
-) -> list[str]:
-    """Discover once and return permitted targets; never connect."""
+):
+    """Discover once and preserve objects for selected permitted targets."""
     validate_discovery_settings(discover_seconds, max_devices)
 
     if not isinstance(policy, SurveyTargetPolicy):
@@ -120,12 +120,47 @@ async def discover_target_queue(
         bluez={"adapter": adapter},
     )
 
-    return summarize_discovery(
-        discovered.keys(),
+    normalized = {
+        address.upper(): value
+        for address, value in discovered.items()
+        if isinstance(address, str) and address.strip()
+    }
+
+    summary = summarize_discovery(
+        normalized.keys(),
         policy,
         max_devices,
     )
 
+    records = [
+        {
+            "address": address,
+            "device": normalized[address][0],
+            "advertisement": normalized[address][1],
+        }
+        for address in summary["targets"]
+    ]
+
+    return summary, records
+
+
+async def discover_target_queue(
+    *,
+    policy: SurveyTargetPolicy,
+    adapter: str,
+    discover_seconds: float = 30,
+    max_devices: int = 50,
+    scanner=None,
+):
+    """Discover once and return serializable survey accounting."""
+    summary, _ = await discover_target_records(
+        policy=policy,
+        adapter=adapter,
+        discover_seconds=discover_seconds,
+        max_devices=max_devices,
+        scanner=scanner,
+    )
+    return summary
 
 def summarize_discovery(discovered_addresses, policy, max_devices):
     """Account for discovery, scope filtering, and the selection cap."""

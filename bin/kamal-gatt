@@ -67,8 +67,12 @@ async def find_target(target, adapter, timeout):
     return None, None
 
 
-async def inspect_target(target, adapter, timeout, registries=None, provenance=None):
+async def inspect_target(
+    target, adapter, timeout, registries=None, provenance=None
+):
+    """Discover a target, then inspect it using the shared lifecycle."""
     report = new_report(target, adapter)
+
     if provenance is not None:
         report["identifier_resolution"] = provenance
 
@@ -89,6 +93,30 @@ async def inspect_target(target, adapter, timeout, registries=None, provenance=N
             "error": None,
         }
         return report, 3
+
+    return await inspect_discovered_device(
+        device=device,
+        adv=adv,
+        adapter=adapter,
+        timeout=timeout,
+        registries=registries,
+        provenance=provenance,
+    )
+
+
+async def inspect_discovered_device(
+    device,
+    adv,
+    adapter,
+    timeout,
+    registries=None,
+    provenance=None,
+):
+    """Inspect an already-discovered device without scanning again."""
+    report = new_report(device.address, adapter)
+
+    if provenance is not None:
+        report["identifier_resolution"] = provenance
 
     report["discovery"] = {
         "attempted": True,

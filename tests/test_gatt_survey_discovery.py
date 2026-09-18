@@ -118,3 +118,31 @@ class SurveyDiscoveryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SurveyRecordTests(unittest.TestCase):
+    def test_preserves_selected_device_and_advertisement_objects(self):
+        from kamal.gatt_survey import discover_target_records
+
+        policy = SurveyTargetPolicy(
+            mode="allowlist",
+            allowlist=frozenset({
+                "AA:BB:CC:DD:EE:01",
+                "AA:BB:CC:DD:EE:02",
+            }),
+        )
+
+        summary, records = asyncio.run(
+            discover_target_records(
+                policy=policy,
+                adapter="hci0",
+                discover_seconds=5,
+                max_devices=1,
+                scanner=FakeScanner,
+            )
+        )
+
+        self.assertEqual(summary["target_count"], 1)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["address"], "AA:BB:CC:DD:EE:01")
+        self.assertIsNotNone(records[0]["device"])
+        self.assertIsNotNone(records[0]["advertisement"])

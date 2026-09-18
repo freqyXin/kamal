@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from kamal.identifiers import load_registry, resolve_identifier, resolve_uuid16
 from kamal.passive_report import build_report
 
-VERSION = '0.8.0'
+VERSION = '0.9.0'
 FIELDS = {
     'frame': 'frame.number',
     'nordic_crcok': 'nordic_ble.crcok',

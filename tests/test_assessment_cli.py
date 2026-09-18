@@ -1,5 +1,6 @@
 """Offline integration tests for the kamal-assess CLI."""
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -69,6 +70,52 @@ class AssessmentCLITests(unittest.TestCase):
         self.assertEqual(len(assessment["sources"]), 2)
         self.assertEqual(len(assessment["observations"]), 2)
         self.assertEqual(assessment["relationships"], [])
+
+        # Verify original-byte provenance and preserved evidence.
+        expected = {
+            hashlib.sha256(path.read_bytes()).hexdigest(): json.loads(
+                path.read_text(encoding="utf-8")
+            )
+            for path in (passive, active)
+        }
+
+        sources = {
+            source["source_id"]: source
+            for source in assessment["sources"]
+        }
+
+        observations = {
+            observation["source_id"]: observation
+            for observation in assessment["observations"]
+        }
+
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(set(sources), set(observations))
+
+        for source_id, source in sources.items():
+            digest = source["sha256"]
+
+            self.assertEqual(source_id, f"sha256:{digest}")
+            self.assertIn(digest, expected)
+            self.assertEqual(
+                observations[source_id]["report"],
+                expected[digest],
+            )
+            self.assertEqual(
+                observations[source_id]["evidence_type"],
+                source["evidence_type"],
+            )
+            self.assertEqual(
+                observations[source_id]["observation_id"],
+                f"observation:{source_id}",
+            )
+
+        self.assertEqual(
+            {source["evidence_type"] for source in sources.values()},
+            {"passive_ble", "active_gatt"},
+        )
+        self.assertEqual(assessment["integrity"]["source_count"], 2)
+        self.assertEqual(assessment["integrity"]["observation_count"], 2)
 
     def test_rejects_duplicate_inputs(self):
         source = self.write_report(

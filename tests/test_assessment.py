@@ -80,6 +80,22 @@ class AssessmentTests(unittest.TestCase):
                 assessment_id="test-assessment",
             )
 
+    def test_load_source_rejects_malformed_passive_report(self):
+        report = passive_report()
+        report["advertiser_count"] = 2
+        path = self.write_report("malformed-passive.json", report)
+
+        with self.assertRaisesRegex(ValueError, "advertiser_count"):
+            load_source(path)
+
+    def test_load_source_rejects_malformed_active_report(self):
+        report = active_report()
+        report["gatt"]["services"] = {}
+        path = self.write_report("malformed-active.json", report)
+
+        with self.assertRaisesRegex(ValueError, "gatt.services"):
+            load_source(path)
+
     def test_rejects_unknown_schema(self):
         path = self.write_report("unknown.json", {
             "schema_version": "9.9.9",

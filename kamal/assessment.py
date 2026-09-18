@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kamal.report_validation import validate_report
+
 
 SCHEMA_VERSION = "0.8.0"
 
@@ -54,6 +56,8 @@ def load_source(path):
 
     if (evidence_type, schema) not in SUPPORTED_REPORTS:
         raise ValueError(f"Unsupported report schema: {schema}")
+
+    validate_report(report, evidence_type)
 
     digest = hashlib.sha256(raw).hexdigest()
 

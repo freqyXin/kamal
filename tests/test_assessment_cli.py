@@ -87,6 +87,23 @@ class AssessmentCLITests(unittest.TestCase):
         self.assertIn("Duplicate source", result.stderr)
         self.assertFalse(output.exists())
 
+    def test_rejects_malformed_report_without_creating_output(self):
+        report = self.passive_report()
+        report["advertiser_count"] = 5
+
+        source = self.write_report("malformed.json", report)
+        output = self.root / "assessment.json"
+
+        result = self.run_cli(
+            "--assessment-id", "malformed-test",
+            "--input", source,
+            "--json", output,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("advertiser_count", result.stderr)
+        self.assertFalse(output.exists())
+
     def test_rejects_invalid_schema(self):
         source = self.write_report("invalid.json", {
             "schema_version": "99.0.0",

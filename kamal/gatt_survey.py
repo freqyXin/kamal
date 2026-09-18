@@ -71,3 +71,57 @@ def build_target_queue(
     }
 
     return sorted(permitted)[:max_devices]
+
+
+def validate_discovery_settings(discover_seconds, max_devices):
+    """Reject invalid survey limits before starting discovery."""
+    import math
+
+    if (
+        isinstance(discover_seconds, bool)
+        or not isinstance(discover_seconds, (int, float))
+        or not math.isfinite(discover_seconds)
+        or not 1 <= discover_seconds <= 60
+    ):
+        raise ValueError("discover_seconds must be between 1 and 60")
+
+    if (
+        isinstance(max_devices, bool)
+        or not isinstance(max_devices, int)
+        or not 1 <= max_devices <= 100
+    ):
+        raise ValueError("max_devices must be between 1 and 100")
+
+
+async def discover_target_queue(
+    *,
+    policy: SurveyTargetPolicy,
+    adapter: str,
+    discover_seconds: float = 30,
+    max_devices: int = 50,
+    scanner=None,
+) -> list[str]:
+    """Discover once and return permitted targets; never connect."""
+    validate_discovery_settings(discover_seconds, max_devices)
+
+    if not isinstance(policy, SurveyTargetPolicy):
+        raise TypeError("policy must be a SurveyTargetPolicy")
+
+    if not isinstance(adapter, str) or not adapter.strip():
+        raise ValueError("adapter must be a nonempty string")
+
+    if scanner is None:
+        from bleak import BleakScanner
+        scanner = BleakScanner
+
+    discovered = await scanner.discover(
+        timeout=discover_seconds,
+        return_adv=True,
+        bluez={"adapter": adapter},
+    )
+
+    return build_target_queue(
+        discovered.keys(),
+        policy,
+        max_devices,
+    )

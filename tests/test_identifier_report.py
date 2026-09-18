@@ -20,7 +20,7 @@ class IdentifierReportTests(unittest.TestCase):
         cls.report = json.loads(Path(filename).read_text(encoding="utf-8"))
 
     def test_schema_and_provenance(self):
-        self.assertEqual(self.report["schema_version"], "0.5.0")
+        self.assertEqual(self.report["schema_version"], "0.6.0")
 
         registries = self.report["identifier_registries"]
         self.assertEqual(

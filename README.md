@@ -101,6 +101,65 @@ rather than connecting directly to the modem's carrier-facing address.
 
 This architecture also avoids requiring port forwarding or a publicly routable cellular IP address.
 
+## BLE Security Tooling
+
+K'amal includes passive BLE inventory and active GATT enumeration
+capabilities alongside its cellular field-node infrastructure.
+
+### Passive inventory
+
+Analyze an existing BLE PCAP:
+
+```bash
+bin/kamal-scan ble --input capture.pcap --json inventory.json
+```
+
+The scanner uses tshark to process captured advertising traffic.
+It reports observed advertisers, advertising data, CRC integrity,
+scan-request activity, and offline Bluetooth SIG identifier names.
+
+Passive observations do not confirm physical device identity or
+establish that GATT services were enumerated.
+
+### Active GATT enumeration
+
+Inspect an explicitly selected, authorized BLE target:
+
+```bash
+bin/kamal-gatt inspect AA:BB:CC:DD:EE:FF \
+  --adapter hci0 \
+  --timeout 10 \
+  --json gatt.json
+```
+
+This command uses BlueZ and Bleak to enumerate GATT metadata.
+It records services, characteristics, descriptors, characteristic
+properties, connection outcomes, and offline UUID resolution.
+
+It does not explicitly read or write characteristic values,
+subscribe to notifications, or request pairing. GATT discovery
+may involve protocol-level ATT reads.
+
+### Offline assessments
+
+Combine existing passive BLE and active GATT reports into an offline assessment.
+
+See the [assessment guide](docs/assessment.md) for usage, provenance, validation, and limitations.
+
+### Identifier registries
+
+Generate the Bluetooth SIG identifier registries locally before
+using the BLE analysis commands.
+
+See [Bluetooth identifier registry setup](data/bluetooth/README.md).
+
+For capture hardware setup, see
+[BLE sniffer documentation](docs/ble-sniffer.md).
+
+### Releases
+
+See [v0.8.0 release notes](docs/releases/v0.8.0.md) and [v0.7.0 release notes](docs/releases/v0.7.0.md).
+
 ## Project Goals
 
 K'amal is intended to provide a reusable foundation for remotely deployed wireless-security infrastructure.

@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from kamal.identifiers import load_registry, resolve_identifier, resolve_uuid16
+from kamal.passive_report import build_report
 
 VERSION = '0.7.0'
 FIELDS = {
@@ -278,27 +279,21 @@ def main():
             warnings.append('Unable to parse capture metadata sidecar')
     else:
         warnings.append('No capture metadata sidecar; PCAP timing not validated')
-    registry_metadata = {
-        name: {
-            'source': registry.get('source'),
-            'source_commit': registry.get('source_commit'),
-            'source_file': registry.get('source_file'),
-            'generated_at_utc': registry.get('generated_at_utc'),
-        }
-        for name, registry in (
-            ('company_identifiers', company_registry),
-            ('service_uuids', service_registry),
-            ('member_uuids', member_registry),
-        )
-    }
+    report = build_report(
+        source_pcap=args.input.resolve(),
+        source_metadata=sidecar.resolve() if sidecar.is_file() else None,
+        devices=devices,
+        skipped=skipped,
+        integrity=integrity,
+        warnings=warnings,
+        scan_request_targets=target_only,
+        registries={
+            'company': company_registry,
+            'service': service_registry,
+            'member': member_registry,
+        },
+    )
 
-    report = dict(identifier_registries=registry_metadata,
-                  schema_version='0.6.0', source_pcap=str(args.input.resolve()),
-                  source_metadata=str(sidecar.resolve()) if sidecar.is_file() else None,
-                  advertiser_count=len(devices), skipped_ambiguous_packets=skipped,
-                  integrity=dict(scope='frames with advertising address', **integrity),
-                  warnings=warnings, advertisers=devices,
-                  scan_request_targets=target_only)
     advertiser_packets = sum(d['packet_count'] for d in devices)
     associated_requests = sum(d['scan_requests_observed'] for d in devices)
     target_only_requests = sum(

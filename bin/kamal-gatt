@@ -161,45 +161,62 @@ async def inspect_target(target, adapter, timeout, registries=None, provenance=N
     return report, status
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Read-only active BLE GATT enumeration for K'amal."
     )
+    commands = parser.add_subparsers(dest="command", required=True)
 
-    parser.add_argument(
-        "command",
-        choices=["inspect"],
-    )
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("target", help="BLE target address")
+    inspect.add_argument("--adapter", default="hci0")
+    inspect.add_argument("--timeout", type=float, default=10.0)
+    inspect.add_argument("--json", dest="json_path")
 
-    parser.add_argument(
-        "target",
-        help="BLE target address",
-    )
+    survey = commands.add_parser("survey")
+    targeting = survey.add_mutually_exclusive_group(required=True)
+    targeting.add_argument("--allowlist", type=Path)
+    targeting.add_argument("--all-discovered", action="store_true")
+    survey.add_argument("--acknowledge-scope", action="store_true")
+    survey.add_argument("--adapter", default="hci0")
+    survey.add_argument("--output-dir", type=Path, required=True)
 
-    parser.add_argument(
-        "--adapter",
-        default="hci0",
-        help="BlueZ adapter to use (default: hci0)",
-    )
-
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=10.0,
-        help="Discovery/connection timeout in seconds (default: 10)",
-    )
-
-    parser.add_argument(
-        "--json",
-        dest="json_path",
-        help="Write report to this JSON file",
-    )
-
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 async def async_main():
     args = parse_args()
+
+    if args.command == "survey":
+        from kamal.gatt_survey import SurveyTargetPolicy
+
+        try:
+            if args.all_discovered:
+                SurveyTargetPolicy(
+                    mode="all_discovered",
+                    acknowledge_scope=args.acknowledge_scope,
+                )
+            else:
+                if args.acknowledge_scope:
+                    raise ValueError(
+                        "Scope acknowledgment is only valid for all-discovered mode"
+                    )
+                targets = json.loads(args.allowlist.read_text(encoding="utf-8"))
+                if not isinstance(targets, list):
+                    raise ValueError("Allowlist must be a JSON array")
+                SurveyTargetPolicy(
+                    mode="allowlist",
+                    allowlist=frozenset(targets),
+                )
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"Survey policy error: {exc}", file=sys.stderr)
+            return 8
+
+        print(
+            "Survey mode is not implemented yet; no Bluetooth operations performed.",
+            file=sys.stderr,
+        )
+        return 9
 
     try:
         registries, provenance = load_gatt_registries()

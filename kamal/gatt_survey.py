@@ -47,3 +47,27 @@ class SurveyTargetPolicy:
         return address.upper() in {
             target.upper() for target in self.allowlist
         }
+
+
+def build_target_queue(
+    discovered_addresses,
+    policy: SurveyTargetPolicy,
+    max_devices: int,
+) -> list[str]:
+    """Build a bounded, deterministic queue of permitted BLE addresses."""
+    if isinstance(max_devices, bool) or not isinstance(max_devices, int):
+        raise ValueError("max_devices must be a positive integer")
+
+    if max_devices < 1:
+        raise ValueError("max_devices must be a positive integer")
+
+    if not isinstance(policy, SurveyTargetPolicy):
+        raise TypeError("policy must be a SurveyTargetPolicy")
+
+    permitted = {
+        address.upper()
+        for address in discovered_addresses
+        if policy.permits(address)
+    }
+
+    return sorted(permitted)[:max_devices]

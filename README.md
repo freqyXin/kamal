@@ -101,6 +101,17 @@ rather than connecting directly to the modem's carrier-facing address.
 
 This architecture also avoids requiring port forwarding or a publicly routable cellular IP address.
 
+## Python development environment
+
+K'amal uses a project-local Python virtual environment for development
+and testing.
+
+Create the environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
 ## BLE Security Tooling
 
 K'amal includes passive BLE inventory and active GATT enumeration

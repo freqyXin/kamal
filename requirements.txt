@@ -1,0 +1,2 @@
+# BLE GATT operations and survey functionality.
+bleak==3.0.2

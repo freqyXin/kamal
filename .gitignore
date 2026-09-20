@@ -12,3 +12,14 @@ __pycache__/
 
 # Local Python environment
 .venv/
+
+# Local engagement evidence and assessment output
+/assessment-results/
+/scan-identify/
+/survey-accounting-results/
+/survey-et8550-live-01/
+/survey-results/
+/et8550-allowlist.json
+
+# Local pre-integration backups
+*.pre-survey-integration

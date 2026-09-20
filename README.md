@@ -219,3 +219,23 @@ See [LICENSE](LICENSE) for details.
 
 For security research deployments, ensure all monitoring, interception, collection, and testing is performed only on systems and radio environments where you have appropriate authorization.
 
+
+## Python development environment
+
+Create a project-local virtual environment:
+
+    python3 -m venv .venv
+    .venv/bin/python -m pip install -r requirements.txt
+
+Run the complete test suite:
+
+    .venv/bin/python -m unittest discover -s tests -v
+
+Use .venv/bin/python explicitly to avoid selecting another Python installation.
+
+The assessment engine operates offline without Bluetooth hardware.
+GATT inspection and surveys require Bleak and a configured Bluetooth
+environment.
+
+The dependency manifest currently covers BLE GATT functionality, not
+every K'amal hardware integration.

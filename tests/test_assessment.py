@@ -62,6 +62,15 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(assessment["relationships"], [])
         self.assertEqual(assessment["findings"], [])
         self.assertEqual(assessment["integrity"]["finding_count"], 0)
+        self.assertEqual(assessment["evidence_contract_version"], "0.12.0")
+        for source in assessment["sources"]:
+            self.assertEqual(source["record_type"], "evidence_source")
+            self.assertEqual(source["contract_version"], "0.12.0")
+            self.assertIn(source["collection_mode"], {"passive", "active"})
+        for observation in assessment["observations"]:
+            self.assertEqual(observation["record_type"], "observation")
+            self.assertEqual(observation["contract_version"], "0.12.0")
+            self.assertIsNone(observation["authorization_ref"])
 
         reports = [
             observation["report"]

@@ -2,13 +2,13 @@
 """Build a unified K'amal assessment from existing JSON reports."""
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from kamal.assessment import build_assessment, load_source
+from kamal.evidence_contracts import atomic_create_json
 
 
 def parse_args(argv=None):
@@ -46,8 +46,6 @@ def main(argv=None):
             assessment_id=args.assessment_id,
         )
 
-        output = json.dumps(assessment, indent=2, sort_keys=True) + "\n"
-
         # Do not overwrite source reports, even if the output path
         # uses a different spelling of the same filesystem path.
         destination = args.json.resolve()
@@ -59,9 +57,7 @@ def main(argv=None):
             ):
                 raise ValueError("Output path must not overwrite a source report")
 
-        # Exclusive creation also prevents overwriting an existing assessment.
-        with args.json.open("x", encoding="utf-8") as handle:
-            handle.write(output)
+        atomic_create_json(args.json, assessment)
 
     except (OSError, ValueError, TypeError, KeyError) as exc:
         print(f"Assessment error: {exc}", file=sys.stderr)

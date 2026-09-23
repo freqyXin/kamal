@@ -9,6 +9,11 @@ from pathlib import Path
 from kamal.report_validation import validate_report
 from kamal.findings import validate_findings
 from kamal.ble_intelligence import analyze_gatt_observation
+from kamal.evidence_contracts import (
+    EVIDENCE_CONTRACT_VERSION,
+    build_observation_record,
+    build_source_record,
+)
 
 
 SCHEMA_VERSION = "0.9.0"
@@ -88,28 +93,15 @@ def build_assessment(sources, *, assessment_id, created_at_utc=None, findings=No
     seen = set()
 
     for source in sources:
-        source_id = source["source_id"]
+        source_record = build_source_record(source)
+        source_id = source_record["source_id"]
 
         if source_id in seen:
             raise ValueError(f"Duplicate source report: {source_id}")
 
         seen.add(source_id)
-
-        source_records.append({
-            "source_id": source_id,
-            "path": source["path"],
-            "sha256": source["sha256"],
-            "evidence_type": source["evidence_type"],
-            "schema_version": source["schema_version"],
-        })
-
-        observations.append({
-            "observation_id": f"observation:{source_id}",
-            "source_id": source_id,
-            "protocol": "ble",
-            "evidence_type": source["evidence_type"],
-            "report": source["report"],
-        })
+        source_records.append(source_record)
+        observations.append(build_observation_record(source))
 
     source_records.sort(key=lambda item: item["source_id"])
     observations.sort(key=lambda item: item["observation_id"])
@@ -129,6 +121,7 @@ def build_assessment(sources, *, assessment_id, created_at_utc=None, findings=No
 
     return {
         "schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "assessment_id": assessment_id,
         "created_at_utc": created_at_utc or utc_now(),
         "sources": source_records,

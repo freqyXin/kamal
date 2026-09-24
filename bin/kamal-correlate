@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Offline cross-run BLE correlation for K'amal assessments."""
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kamal.ble_correlation import (  # noqa: E402
+    build_ble_cross_run_correlation,
+    load_assessment_source,
+)
+from kamal.evidence_contracts import AtomicCreateError, atomic_create_json  # noqa: E402
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "Correlate existing K'amal BLE assessments offline without treating "
+            "Bluetooth addresses as stable asset identity."
+        )
+    )
+    parser.add_argument(
+        "--input",
+        action="append",
+        required=True,
+        type=Path,
+        help="assessment JSON input; repeat for each run",
+    )
+    parser.add_argument(
+        "--json",
+        required=True,
+        type=Path,
+        help="new correlation JSON output; existing files are never replaced",
+    )
+    return parser.parse_args(argv)
+
+
+def _protect_inputs(inputs, output):
+    output_resolved = output.resolve()
+    for source in inputs:
+        source_resolved = source.resolve()
+        if output_resolved == source_resolved:
+            raise ValueError("Output path must not overwrite an input assessment")
+        if output.exists() and source.exists() and output.samefile(source):
+            raise ValueError("Output path must not alias an input assessment")
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        _protect_inputs(args.input, args.json)
+        sources = [load_assessment_source(path) for path in args.input]
+        result = build_ble_cross_run_correlation(sources)
+        atomic_create_json(args.json, result)
+    except AtomicCreateError as exc:
+        if exc.published:
+            print(
+                f"Correlation artifact exists at {exc.path}, but directory "
+                "durability was not confirmed: {exc}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Correlation persistence failed: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"Correlation failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Correlation written: {args.json}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

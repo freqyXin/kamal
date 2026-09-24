@@ -1,12 +1,13 @@
 """Failure-path tests for immutable assessment JSON persistence."""
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from kamal.evidence_contracts import atomic_create_json
+from kamal.evidence_contracts import AtomicCreateError, atomic_create_json
 
 
 class AssessmentPersistenceFailureTests(unittest.TestCase):
@@ -50,6 +51,34 @@ class AssessmentPersistenceFailureTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             atomic_create_json(self.destination, self.payload)
         self.assertEqual(self.destination.read_bytes(), original)
+        self.assertEqual(list(self.root.glob(".assessment.json.*.tmp")), [])
+
+    def test_directory_sync_failure_reports_published_state(self):
+        real_fsync = os.fsync
+        call_count = 0
+
+        def fail_directory_sync(fd):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise OSError("simulated directory fsync failure")
+            return real_fsync(fd)
+
+        with mock.patch(
+            "kamal.evidence_contracts.os.fsync",
+            side_effect=fail_directory_sync,
+        ):
+            with self.assertRaises(AtomicCreateError) as caught:
+                atomic_create_json(self.destination, self.payload)
+
+        error = caught.exception
+        self.assertTrue(error.published)
+        self.assertEqual(error.path, self.destination)
+        self.assertIn("parent directory sync failed", str(error))
+        self.assertEqual(
+            json.loads(self.destination.read_text(encoding="utf-8")),
+            self.payload,
+        )
         self.assertEqual(list(self.root.glob(".assessment.json.*.tmp")), [])
 
     def test_success_publishes_complete_json(self):

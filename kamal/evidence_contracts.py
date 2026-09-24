@@ -19,6 +19,15 @@ COLLECTION_MODES = {
 }
 
 
+class AtomicCreateError(OSError):
+    """Persistence error with explicit publication-state metadata."""
+
+    def __init__(self, message, *, path, published):
+        super().__init__(message)
+        self.path = Path(path)
+        self.published = bool(published)
+
+
 def _require_nonempty_string(value, field):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
@@ -135,12 +144,27 @@ def atomic_create_json(path, payload):
         temporary = None
 
         directory_fd = None
+        directory_error = None
         try:
             directory_fd = os.open(path.parent, os.O_RDONLY)
             os.fsync(directory_fd)
+        except OSError as exc:
+            directory_error = exc
         finally:
             if directory_fd is not None:
-                os.close(directory_fd)
+                try:
+                    os.close(directory_fd)
+                except OSError as exc:
+                    if directory_error is None:
+                        directory_error = exc
+
+        if directory_error is not None:
+            raise AtomicCreateError(
+                f"artifact published at {path}, but parent directory sync failed: "
+                f"{directory_error}",
+                path=path,
+                published=True,
+            ) from directory_error
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

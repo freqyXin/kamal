@@ -61,11 +61,17 @@ silently treated as ordinary GATT enumeration.
 
 ## Persistence
 
-`atomic_create_json()` is available for immutable assessment artifacts, but integration into `kamal-assess` is deferred to the next increment.
+`kamal-assess` uses `atomic_create_json()` for immutable assessment artifacts.
 
 The function writes and fsyncs a temporary file in the destination directory,
 then atomically creates the final pathname using a hard link. If the final path
 already exists, creation fails and the existing file is preserved.
+
+If the final pathname has already been created but syncing the parent directory
+then fails, `atomic_create_json()` raises `AtomicCreateError` with
+`published=True` and the destination `path`. Callers must treat that state as
+"published, durability not confirmed" rather than retrying as though no artifact
+exists.
 
 This differs intentionally from survey checkpoint persistence, where replacing
 an earlier checkpoint is expected behavior.

@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Create an offline, hash-bound analyst review of one GATT operation result."""
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kamal.evidence_contracts import AtomicCreateError
+from kamal.result_semantics import ResultSemanticsError, write_effect_review
+
+
+def parser():
+    p = argparse.ArgumentParser(
+        description="Review GATT result semantics offline without performing RF operations."
+    )
+    p.add_argument("--operation", required=True, type=Path)
+    p.add_argument("--review", required=True, type=Path)
+    p.add_argument("--json", required=True, type=Path)
+    return p
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        artifact = write_effect_review(args.operation, args.review, args.json)
+    except (OSError, ValueError, TypeError, KeyError, ResultSemanticsError, AtomicCreateError) as exc:
+        print(f"kamal-review-gatt-result: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"GATT effect review written: {artifact['review_id']} "
+        f"for operation {artifact['operation_provenance']['operation_id']}"
+    )
+    print("No RF or network operations were performed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

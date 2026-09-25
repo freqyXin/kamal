@@ -1,4 +1,4 @@
-import asyncio, hashlib, tempfile, unittest
+import asyncio, hashlib, json, tempfile, unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,8 +40,18 @@ class ExecTests(unittest.TestCase):
         return final,Path(td.name)/"out"
     def test_read_persists_incrementally(self):
         final,out=self.run_case(); self.assertTrue(final["complete"]); self.assertTrue((out/"run-start.json").exists()); self.assertTrue((out/"operation-001.json").exists()); self.assertTrue((out/"run-final.json").exists())
+        result=json.loads((out/"operation-001.json").read_text())
+        self.assertEqual(result["effect_semantics"]["transport"]["state"],"succeeded")
+        self.assertEqual(result["effect_semantics"]["protocol"]["state"],"value_received")
+        self.assertEqual(result["effect_semantics"]["security_effect"]["state"],"not_assessed")
+        self.assertEqual(final["transport_success_count"],1)
+        self.assertEqual(final["higher_effects_assessed_count"],0)
     def test_write_executes_bounded_payload(self):
-        c=FakeClient(); self.run_case("write_characteristic",c); self.assertEqual(c.writes,[(b"\x01\x02",True)])
+        c=FakeClient(); final,out=self.run_case("write_characteristic",c); self.assertEqual(c.writes,[(b"\x01\x02",True)])
+        result=json.loads((out/"operation-001.json").read_text())
+        self.assertEqual(result["effect_semantics"]["protocol"]["state"],"write_request_completed")
+        self.assertEqual(result["effect_semantics"]["application_acknowledgment"]["state"],"not_assessed")
+        self.assertEqual(result["application_effect"],"not_assessed")
     def test_notification_cleanup(self): self.run_case("subscribe_notifications")
     def test_unsafe_disconnect_fails(self):
         p,a,sha=plan(); td=tempfile.TemporaryDirectory(); self.addCleanup(td.cleanup)

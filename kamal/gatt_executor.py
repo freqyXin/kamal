@@ -14,6 +14,12 @@ from kamal.active_contracts import (
     validate_authorization_scope,
 )
 from kamal.evidence_contracts import atomic_create_json
+from kamal.result_semantics import (
+    RESULT_SEMANTICS_VERSION,
+    build_initial_effect_semantics,
+    mark_executor_failure,
+    mark_executor_success,
+)
 
 EXECUTOR_VERSION = "0.12.0"
 MAX_NOTIFICATION_EVENTS = 256
@@ -140,7 +146,7 @@ async def execute_plan(plan, authorization, *, authorization_sha256, plan_sha256
             typ=op["operation_type"]
             if typ in {"write_characteristic","subscribe_notifications"}: _verify_plan({**plan,"operations":[op]}, authorization, authorization_sha256)
             selected=_resolve_selector(current_client.services, op["selector"], typ)
-            rec={"schema_version":EXECUTOR_VERSION,"record_type":"gatt_operation_result","plan_id":plan["plan_id"],"operation_id":op["operation_id"],"operation_type":typ,"target":op["target"],"started_at_utc":utc_now(),"transport_success":False,"application_effect":"not_assessed","error":None}
+            rec={"schema_version":EXECUTOR_VERSION,"record_type":"gatt_operation_result","plan_id":plan["plan_id"],"operation_id":op["operation_id"],"operation_type":typ,"target":op["target"],"started_at_utc":utc_now(),"transport_success":False,"application_effect":"not_assessed","effect_semantics":build_initial_effect_semantics(typ, write_mode=op.get("write_mode")),"error":None}
             try:
                 if typ=="read_characteristic":
                     data=bytes(await asyncio.wait_for(current_client.read_gatt_char(selected), timeout=op["timeout_seconds"])); rec["value_hex"]=data.hex(); rec["value_bytes"]=len(data)
@@ -161,9 +167,11 @@ async def execute_plan(plan, authorization, *, authorization_sha256, plan_sha256
                         try: await asyncio.wait_for(current_client.stop_notify(selected), timeout=op["timeout_seconds"])
                         except Exception as exc: unsafe=True; raise UnsafeStopError(f"notification cleanup failed: {type(exc).__name__}: {exc}") from exc
                     rec["notifications"]=events; rec["notification_count"]=len(events); rec["notification_bytes"]=total; rec["notifications_truncated"]=truncated
+                rec["effect_semantics"]=mark_executor_success(rec["effect_semantics"],typ,write_mode=op.get("write_mode"),notification_count=rec.get("notification_count"))
                 rec["transport_success"]=True
             except Exception as exc:
                 rec["error"]=f"{type(exc).__name__}: {exc}"
+                rec["effect_semantics"]=mark_executor_failure(rec["effect_semantics"],rec["error"])
                 rec["completed_at_utc"]=utc_now(); atomic_create_json(out/f"operation-{index:03d}.json",rec); results.append(rec)
                 if isinstance(exc,UnsafeStopError): raise
                 raise ExecutionError(rec["error"]) from exc
@@ -174,7 +182,7 @@ async def execute_plan(plan, authorization, *, authorization_sha256, plan_sha256
     finally:
         disc=await disconnect_current()
         if unsafe and error is None: error=UnsafeStopError(disc.get("error") or "cleanup was not confirmed")
-        final={"schema_version":EXECUTOR_VERSION,"record_type":"gatt_execution_summary","plan_id":plan["plan_id"],"completed_at_utc":utc_now(),"planned_operations":len(plan["operations"]),"completed_operations":len(results),"rf_performed":True,"unsafe_stop":unsafe,"complete":error is None and len(results)==len(plan["operations"]),"error":None if error is None else f"{type(error).__name__}: {error}","disconnect":disc}
+        final={"schema_version":EXECUTOR_VERSION,"record_type":"gatt_execution_summary","plan_id":plan["plan_id"],"completed_at_utc":utc_now(),"planned_operations":len(plan["operations"]),"completed_operations":len(results),"transport_success_count":sum(item["effect_semantics"]["transport"]["state"]=="succeeded" for item in results),"higher_effects_assessed_count":sum(item["effect_semantics"]["application_acknowledgment"]["state"]!="not_assessed" or item["effect_semantics"]["state_change"]["state"]!="not_assessed" or item["effect_semantics"]["security_effect"]["state"]!="not_assessed" for item in results),"result_semantics_version":RESULT_SEMANTICS_VERSION,"rf_performed":True,"unsafe_stop":unsafe,"complete":error is None and len(results)==len(plan["operations"]),"error":None if error is None else f"{type(error).__name__}: {error}","disconnect":disc}
         atomic_create_json(out/"run-final.json",final)
     if error is not None: raise error
     return final

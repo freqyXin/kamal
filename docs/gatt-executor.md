@@ -5,7 +5,20 @@ It requires the original authorization artifact, verifies its exact SHA-256 agai
 
 The executor supports only the typed operation classes already present in the plan: characteristic read, descriptor read, characteristic write, and bounded notification subscription. It does not accept ad-hoc operations and does not implement fuzzing.
 
-Results are persisted incrementally in a newly-created output directory. `run-start.json` is written before RF work, each completed/failed operation is written once as `operation-NNN.json`, and `run-final.json` records completion and cleanup state. Artifacts are never overwritten.
+Every execution also requires a persistent `--safety-state-dir`.  K'amal acquires
+a durable single-executor lease before RF activity.  An unsafe or interrupted
+run blocks subsequent active execution until an operator records explicit
+recovery with `kamal-resolve-gatt-unsafe`.  See
+`docs/gatt-safety-interlock.md`.
+
+Results are persisted incrementally in a newly-created output directory. `run-start.json` is written before RF work, each attempted operation is written once as `operation-NNN.json`, and `run-final.json` records completion, cleanup, unattempted operations, and safety-interlock state. Artifacts are never overwritten.
+
+K'amal stops the plan on the first operation failure or unexpected connection
+loss.  It does not automatically reconnect and continue.  If cleanup is
+confirmed safe, the persistent lease is cleared; if disconnect or unsubscribe
+state is uncertain, a recovery-required latch remains.  A process crash can
+leave `active-run.json` behind, which is intentionally treated as an orphaned
+run requiring the same explicit recovery workflow.
 
 ## Result semantics
 

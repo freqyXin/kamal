@@ -1,24 +1,72 @@
 #!/usr/bin/env python3
 """Execute a validated, bounded GATT plan against expressly authorized targets."""
-import argparse, asyncio, sys
+import argparse
+import asyncio
+import sys
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
-from kamal.gatt_executor import ExecutionError, execute_plan, load_execution_inputs
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from kamal.active_contracts import ContractValidationError
+from kamal.gatt_executor import ExecutionError, execute_plan, load_execution_inputs
+from kamal.gatt_safety import SafetyInterlockError
+
 
 def parser():
-    p=argparse.ArgumentParser(description="Execute a previously validated bounded BLE GATT plan.")
-    p.add_argument("--plan",required=True,type=Path); p.add_argument("--authorization",required=True,type=Path); p.add_argument("--output-dir",required=True,type=Path); p.add_argument("--adapter",default="hci0"); return p
+    p = argparse.ArgumentParser(
+        description="Execute a previously validated bounded BLE GATT plan."
+    )
+    p.add_argument("--plan", required=True, type=Path)
+    p.add_argument("--authorization", required=True, type=Path)
+    p.add_argument("--output-dir", required=True, type=Path)
+    p.add_argument(
+        "--safety-state-dir",
+        required=True,
+        type=Path,
+        help="Persistent interlock directory shared by active GATT executions.",
+    )
+    p.add_argument("--adapter", default="hci0")
+    return p
+
+
 async def async_main(argv=None):
-    a=parser().parse_args(argv)
+    a = parser().parse_args(argv)
     try:
-        plan,plan_sha,_,auth,auth_sha,_=load_execution_inputs(a.plan,a.authorization)
-        final=await execute_plan(plan,auth,authorization_sha256=auth_sha,plan_sha256=plan_sha,output_dir=a.output_dir,adapter=a.adapter)
-    except (OSError,ExecutionError,ContractValidationError,ValueError,TypeError,KeyError) as exc:
-        print(f"kamal-execute-gatt: {exc}",file=sys.stderr); return 1
-    print(f"GATT execution complete: {final['completed_operations']}/{final['planned_operations']} operations")
+        plan, plan_sha, _, auth, auth_sha, _ = load_execution_inputs(
+            a.plan, a.authorization
+        )
+        final = await execute_plan(
+            plan,
+            auth,
+            authorization_sha256=auth_sha,
+            plan_sha256=plan_sha,
+            output_dir=a.output_dir,
+            safety_state_dir=a.safety_state_dir,
+            adapter=a.adapter,
+        )
+    except (
+        OSError,
+        ExecutionError,
+        SafetyInterlockError,
+        ContractValidationError,
+        ValueError,
+        TypeError,
+        KeyError,
+    ) as exc:
+        print(f"kamal-execute-gatt: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"GATT execution complete: {final['successful_operations']}/"
+        f"{final['planned_operations']} operations succeeded"
+    )
     return 0
 
-def main(argv=None): return asyncio.run(async_main(argv))
-if __name__=="__main__": raise SystemExit(main())
+
+def main(argv=None):
+    return asyncio.run(async_main(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

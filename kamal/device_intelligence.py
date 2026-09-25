@@ -17,6 +17,12 @@ from pathlib import Path
 
 from kamal.ble_correlation import load_assessment_source
 from kamal.evidence_contracts import EVIDENCE_CONTRACT_VERSION
+from kamal.catalog_provenance import (
+    build_device_catalog_provenance,
+    has_bluetooth_provenance,
+    merge_catalog_provenance,
+    sources_require_bluetooth_snapshot,
+)
 
 
 INTELLIGENCE_SCHEMA_VERSION = "0.12.0"
@@ -272,11 +278,19 @@ def load_intelligence_catalog(path):
     normalized_records.sort(key=lambda item: item["record_id"])
 
     digest = hashlib.sha256(raw).hexdigest()
+    catalog_revision = catalog.get("catalog_revision")
+    if catalog_revision is None:
+        catalog_revision = f"sha256:{digest}"
+    else:
+        catalog_revision = _require_nonempty_string(
+            catalog_revision, "catalog_revision"
+        )
     return {
         "catalog_source_id": f"sha256:{digest}",
         "path": str(path),
         "sha256": digest,
         "catalog_id": catalog_id,
+        "catalog_revision": catalog_revision,
         "schema_version": INTELLIGENCE_SCHEMA_VERSION,
         "records": normalized_records,
     }
@@ -544,7 +558,7 @@ def _claim_id(record_id, fact_id):
     return "intelligence-claim:sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def _build_claim(record, fact, *, catalog_source_id):
+def _build_claim(record, fact, *, catalog_source_id, catalog_revision):
     claim = {
         "record_type": "intelligence_claim",
         "contract_version": EVIDENCE_CONTRACT_VERSION,
@@ -553,6 +567,7 @@ def _build_claim(record, fact, *, catalog_source_id):
         "source_id": fact["source_id"],
         "observed_fact_id": fact["fact_id"],
         "catalog_source_id": catalog_source_id,
+        "catalog_revision": catalog_revision,
         "catalog_record_id": record["record_id"],
         "category": record["claim"]["category"],
         "value": record["claim"]["value"],
@@ -590,7 +605,12 @@ def _conflict_warnings(claims):
     return warnings
 
 
-def build_ble_intelligence_enrichment(assessment_source, catalog_source):
+def build_ble_intelligence_enrichment(
+    assessment_source,
+    catalog_source,
+    *,
+    catalog_provenance=None,
+):
     """Enrich an assessment from a local catalog without asserting identity."""
     if not isinstance(assessment_source, dict):
         raise ValueError("assessment_source must be an object")
@@ -642,6 +662,25 @@ def build_ble_intelligence_enrichment(assessment_source, catalog_source):
     )
     if catalog_source_id != f"sha256:{catalog_sha256}":
         raise ValueError("catalog_source_id must match catalog sha256")
+    catalog_revision = catalog_source.get("catalog_revision") or f"sha256:{catalog_sha256}"
+    catalog_revision = _require_nonempty_string(catalog_revision, "catalog_revision")
+
+    device_catalog_provenance = build_device_catalog_provenance(
+        {**catalog_source, "catalog_revision": catalog_revision},
+        usage="consulted",
+    )
+    merged_catalog_provenance = merge_catalog_provenance(
+        assessment.get("catalog_provenance", []),
+        [] if catalog_provenance is None else catalog_provenance,
+        [device_catalog_provenance],
+    )
+    if (
+        sources_require_bluetooth_snapshot(assessment.get("observations", []))
+        and not has_bluetooth_provenance(merged_catalog_provenance)
+    ):
+        raise ValueError(
+            "catalog-resolved BLE evidence requires pinned Bluetooth catalog provenance"
+        )
 
     warnings = []
     facts = extract_observed_intelligence_facts(assessment, warnings=warnings)
@@ -653,6 +692,7 @@ def build_ble_intelligence_enrichment(assessment_source, catalog_source):
                     record,
                     fact,
                     catalog_source_id=catalog_source_id,
+                    catalog_revision=catalog_revision,
                 ))
     claims.sort(key=lambda item: (
         item["observation_id"],
@@ -682,9 +722,11 @@ def build_ble_intelligence_enrichment(assessment_source, catalog_source):
         "catalog_source": {
             "catalog_source_id": catalog_source_id,
             "catalog_id": _require_nonempty_string(catalog_source.get("catalog_id"), "catalog_id"),
+            "catalog_revision": catalog_revision,
             "path": _require_nonempty_string(catalog_source.get("path"), "catalog path"),
             "sha256": catalog_sha256,
         },
+        "catalog_provenance": merged_catalog_provenance,
         "observed_facts": facts,
         "claims": claims,
         "integrity": {

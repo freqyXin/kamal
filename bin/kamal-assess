@@ -9,6 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from kamal.assessment import build_assessment, load_source
 from kamal.evidence_contracts import atomic_create_json
+from kamal.catalog_provenance import (
+    bind_bluetooth_snapshot,
+    load_bluetooth_snapshot,
+    sources_require_bluetooth_snapshot,
+)
 
 
 def parse_args(argv=None):
@@ -28,6 +33,14 @@ def parse_args(argv=None):
         help="Source JSON report; repeat for multiple reports",
     )
     parser.add_argument(
+        "--bluetooth-snapshot",
+        type=Path,
+        help=(
+            "Verified immutable Bluetooth SIG snapshot to pin into the assessment; "
+            "no network access occurs"
+        ),
+    )
+    parser.add_argument(
         "--json",
         type=Path,
         required=True,
@@ -41,9 +54,21 @@ def main(argv=None):
 
     try:
         sources = [load_source(path) for path in args.input]
+        requires_snapshot = sources_require_bluetooth_snapshot(sources)
+        if requires_snapshot and args.bluetooth_snapshot is None:
+            raise ValueError(
+                "catalog-resolved BLE evidence requires --bluetooth-snapshot"
+            )
+        catalog_provenance = []
+        if args.bluetooth_snapshot is not None:
+            snapshot = load_bluetooth_snapshot(args.bluetooth_snapshot)
+            catalog_provenance.append(
+                bind_bluetooth_snapshot(snapshot, sources)
+            )
         assessment = build_assessment(
             sources,
             assessment_id=args.assessment_id,
+            catalog_provenance=catalog_provenance,
         )
 
         # Do not overwrite source reports, even if the output path

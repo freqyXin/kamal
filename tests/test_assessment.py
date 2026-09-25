@@ -60,6 +60,7 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(len(assessment["sources"]), 2)
         self.assertEqual(len(assessment["observations"]), 2)
         self.assertEqual(assessment["relationships"], [])
+        self.assertEqual(assessment["catalog_provenance"], [])
         self.assertEqual(assessment["findings"], [])
         self.assertEqual(assessment["integrity"]["finding_count"], 0)
         self.assertEqual(assessment["evidence_contract_version"], "0.12.0")
@@ -81,6 +82,26 @@ class AssessmentTests(unittest.TestCase):
             {report["schema_version"] for report in reports},
             {"0.6.0", "0.7.0"},
         )
+
+    def test_preserves_explicit_catalog_provenance(self):
+        source = load_source(self.write_report("active.json", active_report()))
+        digest = "b" * 64
+        assessment = build_assessment(
+            [source],
+            assessment_id="catalog-test",
+            catalog_provenance=[{
+                "catalog_type": "ble_device_intelligence",
+                "catalog_id": "test-catalog",
+                "revision": f"sha256:{digest}",
+                "usage": "available",
+                "path": "/tmp/test-catalog.json",
+                "sha256": digest,
+            }],
+        )
+        provenance = assessment["catalog_provenance"][0]
+        self.assertEqual(provenance["catalog_id"], "test-catalog")
+        self.assertEqual(provenance["revision"], f"sha256:{digest}")
+        self.assertEqual(provenance["usage"], "available")
 
     def test_rejects_duplicate_source(self):
         source = load_source(self.write_report("passive.json", passive_report()))

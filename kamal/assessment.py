@@ -14,6 +14,7 @@ from kamal.evidence_contracts import (
     build_observation_record,
     build_source_record,
 )
+from kamal.catalog_provenance import normalize_catalog_provenance
 
 
 SCHEMA_VERSION = "0.9.0"
@@ -79,7 +80,14 @@ def load_source(path):
     }
 
 
-def build_assessment(sources, *, assessment_id, created_at_utc=None, findings=None):
+def build_assessment(
+    sources,
+    *,
+    assessment_id,
+    created_at_utc=None,
+    findings=None,
+    catalog_provenance=None,
+):
     """Build an assessment without merging or modifying source evidence."""
 
     if not assessment_id or not assessment_id.strip():
@@ -119,6 +127,10 @@ def build_assessment(sources, *, assessment_id, created_at_utc=None, findings=No
         observation_reports,
     )
 
+    validated_catalog_provenance = normalize_catalog_provenance(
+        [] if catalog_provenance is None else catalog_provenance
+    )
+
     return {
         "schema_version": SCHEMA_VERSION,
         "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
@@ -127,6 +139,7 @@ def build_assessment(sources, *, assessment_id, created_at_utc=None, findings=No
         "sources": source_records,
         "observations": observations,
         "relationships": [],
+        "catalog_provenance": validated_catalog_provenance,
         "findings": deepcopy(validated_findings),
         "integrity": {
             "source_count": len(source_records),

@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from report_fixtures import active_report, passive_report
+from catalog_fixtures import write_bluetooth_snapshot
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,6 +22,7 @@ class AssessmentCLITests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        self.snapshot = write_bluetooth_snapshot(self.root / "snapshots")
 
     def write_report(self, filename, report):
         path = self.root / filename
@@ -55,6 +57,7 @@ class AssessmentCLITests(unittest.TestCase):
             "--assessment-id", "integration-test",
             "--input", passive,
             "--input", active,
+            "--bluetooth-snapshot", self.snapshot,
             "--json", output,
         )
 
@@ -71,6 +74,8 @@ class AssessmentCLITests(unittest.TestCase):
         self.assertEqual(len(assessment["sources"]), 2)
         self.assertEqual(len(assessment["observations"]), 2)
         self.assertEqual(assessment["relationships"], [])
+        self.assertEqual(len(assessment["catalog_provenance"]), 1)
+        self.assertEqual(assessment["catalog_provenance"][0]["usage"], "consulted")
 
         # Verify original-byte provenance and preserved evidence.
         expected = {
@@ -118,6 +123,59 @@ class AssessmentCLITests(unittest.TestCase):
         self.assertEqual(assessment["integrity"]["source_count"], 2)
         self.assertEqual(assessment["integrity"]["observation_count"], 2)
 
+    def test_pins_bluetooth_snapshot_for_passive_report(self):
+        passive = self.write_report(
+            "passive.json", self.passive_report()
+        )
+        snapshot = self.snapshot
+        output = self.root / "assessment.json"
+
+        result = self.run_cli(
+            "--assessment-id", "pinned-test",
+            "--input", passive,
+            "--bluetooth-snapshot", snapshot,
+            "--json", output,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        provenance = json.loads(output.read_text())["catalog_provenance"][0]
+        self.assertEqual(provenance["revision"], "a" * 40)
+        self.assertEqual(provenance["usage"], "consulted")
+        self.assertEqual(provenance["binding"]["passive_report_count"], 1)
+        self.assertEqual(len(provenance["manifest_sha256"]), 64)
+
+    def test_rejects_bluetooth_snapshot_mismatch(self):
+        report = self.passive_report()
+        report["identifier_registries"]["company_identifiers"]["source_commit"] = "b" * 40
+        passive = self.write_report("passive.json", report)
+        snapshot = self.snapshot
+        output = self.root / "assessment.json"
+
+        result = self.run_cli(
+            "--assessment-id", "mismatch-test",
+            "--input", passive,
+            "--bluetooth-snapshot", snapshot,
+            "--json", output,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match pinned snapshot", result.stderr)
+        self.assertFalse(output.exists())
+
+    def test_requires_snapshot_for_catalog_resolved_passive_evidence(self):
+        passive = self.write_report("passive.json", self.passive_report())
+        output = self.root / "assessment.json"
+
+        result = self.run_cli(
+            "--assessment-id", "unpinned-test",
+            "--input", passive,
+            "--json", output,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires --bluetooth-snapshot", result.stderr)
+        self.assertFalse(output.exists())
+
     def test_rejects_duplicate_inputs(self):
         source = self.write_report(
             "passive.json", self.passive_report()
@@ -128,6 +186,7 @@ class AssessmentCLITests(unittest.TestCase):
             "--assessment-id", "duplicate-test",
             "--input", source,
             "--input", source,
+            "--bluetooth-snapshot", self.snapshot,
             "--json", output,
         )
 
@@ -178,6 +237,7 @@ class AssessmentCLITests(unittest.TestCase):
         result = self.run_cli(
             "--assessment-id", "overwrite-test",
             "--input", source,
+            "--bluetooth-snapshot", self.snapshot,
             "--json", source,
         )
 
@@ -195,6 +255,7 @@ class AssessmentCLITests(unittest.TestCase):
         result = self.run_cli(
             "--assessment-id", "existing-test",
             "--input", source,
+            "--bluetooth-snapshot", self.snapshot,
             "--json", output,
         )
 
@@ -212,6 +273,7 @@ class AssessmentCLITests(unittest.TestCase):
         result = self.run_cli(
             "--assessment-id", "hardlink-test",
             "--input", source,
+            "--bluetooth-snapshot", self.snapshot,
             "--json", output,
         )
 
@@ -228,6 +290,7 @@ class AssessmentCLITests(unittest.TestCase):
         result = self.run_cli(
             "--assessment-id", "",
             "--input", source,
+            "--bluetooth-snapshot", self.snapshot,
             "--json", output,
         )
 

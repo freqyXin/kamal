@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from catalog_fixtures import write_bluetooth_snapshot
+
+from kamal.catalog_provenance import load_bluetooth_snapshot
 from kamal.device_intelligence import (
     build_ble_intelligence_enrichment,
     extract_observed_intelligence_facts,
@@ -56,13 +59,15 @@ def active_observation():
     }
 
 
-def assessment_source(*observations):
+def assessment_source(*observations, catalog_provenance=None):
     assessment = {
         "schema_version": "0.9.0",
         "assessment_id": "run-a",
         "evidence_contract_version": "0.12.0",
         "observations": list(observations),
     }
+    if catalog_provenance is not None:
+        assessment["catalog_provenance"] = catalog_provenance
     return {
         "assessment_source_id": "sha256:" + ASSESSMENT_DIGEST,
         "path": "/tmp/assessment.json",
@@ -106,6 +111,7 @@ def catalog_source(*records):
         "path": "/tmp/catalog.json",
         "sha256": CATALOG_DIGEST,
         "catalog_id": "test-catalog",
+        "catalog_revision": "device-test-r1",
         "schema_version": "0.12.0",
         "records": list(records),
     }
@@ -150,6 +156,11 @@ class DeviceIntelligenceTests(unittest.TestCase):
         self.assertFalse(claims[0]["identity_assertion"])
         self.assertFalse(claims[0]["stable_identity"])
         self.assertNotIn("asset_id", claims[0])
+        self.assertTrue(claims[0]["catalog_revision"].startswith("sha256:"))
+        provenance = result["catalog_provenance"]
+        self.assertEqual(len(provenance), 1)
+        self.assertEqual(provenance[0]["catalog_type"], "ble_device_intelligence")
+        self.assertEqual(provenance[0]["usage"], "consulted")
 
     def test_manufacturer_prefix_can_remain_inferred_chipset_hint(self):
         catalog = catalog_source(record(
@@ -302,6 +313,55 @@ class DeviceIntelligenceTests(unittest.TestCase):
         )["claims"][0]
         self.assertEqual(claim["state"], "validated")
         self.assertEqual(claim["validation"], validation)
+
+    def test_catalog_resolved_assessment_requires_bluetooth_pin(self):
+        observation = passive_observation()
+        observation["report"]["identifier_registries"] = {}
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires pinned Bluetooth catalog provenance",
+        ):
+            build_ble_intelligence_enrichment(
+                assessment_source(observation),
+                catalog_source(),
+            )
+
+    def test_catalog_revision_is_preserved_when_explicit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "catalog.json"
+            path.write_text(json.dumps({
+                "schema_version": "0.12.0",
+                "catalog_id": "test-catalog",
+                "catalog_revision": "reviewed-2026-09-24",
+                "records": [],
+            }))
+            catalog = load_intelligence_catalog(path)
+        self.assertEqual(catalog["catalog_revision"], "reviewed-2026-09-24")
+
+    def test_enrichment_carries_assessment_bluetooth_provenance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = load_bluetooth_snapshot(
+                write_bluetooth_snapshot(Path(temp_dir) / "snapshots")
+            )["provenance"]
+        snapshot["usage"] = "consulted"
+        source = assessment_source(
+            passive_observation(),
+            catalog_provenance=[snapshot],
+        )
+        result = build_ble_intelligence_enrichment(source, catalog_source())
+        provenance = {item["catalog_type"]: item for item in result["catalog_provenance"]}
+        self.assertEqual(
+            provenance["bluetooth_sig_assigned_numbers"]["usage"],
+            "consulted",
+        )
+        self.assertEqual(
+            provenance["ble_device_intelligence"]["revision"],
+            "device-test-r1",
+        )
+        self.assertEqual(
+            provenance["ble_device_intelligence"]["usage"],
+            "consulted",
+        )
 
     def test_catalog_output_is_deterministic_across_record_order(self):
         first = record(

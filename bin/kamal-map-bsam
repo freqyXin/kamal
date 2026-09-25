@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Build an offline BSAM-aligned coverage map from K'amal evidence."""
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kamal.bsam_mapping import (  # noqa: E402
+    build_bsam_mapping,
+    load_assessment_source,
+    load_bsam_enrichment_source,
+)
+from kamal.evidence_contracts import AtomicCreateError, atomic_create_json  # noqa: E402
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "Map existing K'amal BLE evidence to a conservative BSAM coverage "
+            "artifact. No RF or network operations occur."
+        )
+    )
+    parser.add_argument("--assessment", required=True, type=Path)
+    parser.add_argument(
+        "--enrichment",
+        type=Path,
+        help="optional K'amal BLE device-intelligence enrichment for context",
+    )
+    parser.add_argument(
+        "--json",
+        required=True,
+        type=Path,
+        help="new BSAM mapping JSON output; existing files are never replaced",
+    )
+    return parser.parse_args(argv)
+
+
+def _protect_inputs(inputs, output):
+    destination = output.resolve()
+    for source in inputs:
+        if source is None:
+            continue
+        if destination == source.resolve():
+            raise ValueError("Output path must not overwrite an input")
+        if output.exists() and source.exists() and output.samefile(source):
+            raise ValueError("Output path must not alias an input")
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    inputs = (args.assessment, args.enrichment)
+    try:
+        _protect_inputs(inputs, args.json)
+        assessment_source = load_assessment_source(args.assessment)
+        enrichment_source = (
+            None
+            if args.enrichment is None
+            else load_bsam_enrichment_source(args.enrichment)
+        )
+        result = build_bsam_mapping(
+            assessment_source,
+            enrichment_source=enrichment_source,
+        )
+        atomic_create_json(args.json, result)
+    except AtomicCreateError as exc:
+        if exc.published:
+            print(
+                f"BSAM mapping exists at {exc.path}, but directory durability "
+                f"was not confirmed: {exc}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"BSAM mapping persistence failed: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"BSAM mapping failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"BSAM mapping written: {args.json}")
+    print("No RF or network operations were performed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

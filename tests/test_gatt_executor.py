@@ -153,9 +153,14 @@ class FakeClient:
 
 
 class Backend:
-    def __init__(self, client):
+    def __init__(self, client, *, prepare_error=None):
         self.c = client
+        self.prepare_error = prepare_error
         self.discover_calls = 0
+
+    def prepare(self):
+        if self.prepare_error is not None:
+            raise self.prepare_error
 
     async def discover(self, *a, **k):
         self.discover_calls += 1
@@ -297,6 +302,37 @@ class ExecTests(unittest.TestCase):
             )
         self.assertEqual(backend.discover_calls, 0)
         self.assertFalse((root / "second").exists())
+
+    def test_backend_prepare_failure_is_recorded_before_rf(self):
+        p, a, sha = plan()
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        backend = Backend(
+            FakeClient(),
+            prepare_error=ModuleNotFoundError("No module named 'bleak'"),
+        )
+        with self.assertRaises(ExecutionError):
+            asyncio.run(
+                execute_plan(
+                    p,
+                    a,
+                    authorization_sha256=sha,
+                    plan_sha256="2" * 64,
+                    output_dir=root / "out",
+                    safety_state_dir=root / "safety",
+                    backend=backend,
+                )
+            )
+        result = json.loads((root / "out" / "operation-001.json").read_text())
+        final = json.loads((root / "out" / "run-final.json").read_text())
+        self.assertFalse(result["rf_attempted"])
+        self.assertFalse(final["rf_performed"])
+        self.assertEqual(backend.discover_calls, 0)
+        self.assertIn("No module named 'bleak'", result["error"])
+        self.assertFalse(final["recovery_required"])
+        self.assertFalse((root / "safety" / "active-run.json").exists())
+        self.assertFalse((root / "safety" / "unsafe-stop.json").exists())
 
     def test_operation_failure_preserves_evidence_and_releases_safe_interlock(self):
         p, a, sha = plan()

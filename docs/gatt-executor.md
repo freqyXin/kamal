@@ -13,6 +13,8 @@ recovery with `kamal-resolve-gatt-unsafe`.  See
 
 Results are persisted incrementally in a newly-created output directory. `run-start.json` is written before RF work, each attempted operation is written once as `operation-NNN.json`, and `run-final.json` records completion, cleanup, unattempted operations, and safety-interlock state. Artifacts are never overwritten.
 
+Before K'amal marks RF as started, the BLE backend must complete local-only dependency preparation. A backend initialization failure therefore produces immutable operation/final evidence with `rf_attempted=false` and `rf_performed=false`; the executor does not claim RF activity merely because an active run had been acquired. Once backend preparation succeeds, K'amal durably marks that RF activity may begin immediately before the first discovery call.
+
 K'amal stops the plan on the first operation failure or unexpected connection
 loss.  It does not automatically reconnect and continue.  If cleanup is
 confirmed safe, the persistent lease is cleared; if disconnect or unsubscribe

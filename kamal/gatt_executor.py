@@ -162,10 +162,21 @@ def _resolve_selector(services, selector, operation_type):
 
 
 class BleakBackend:
-    async def discover(self, address, adapter, timeout):
-        from bleak import BleakScanner
+    def __init__(self):
+        self._scanner_class = None
+        self._client_class = None
 
-        devices = await BleakScanner.discover(
+    def prepare(self):
+        """Load the BLE client dependency without initiating RF activity."""
+        if self._scanner_class is None or self._client_class is None:
+            from bleak import BleakClient, BleakScanner
+
+            self._scanner_class = BleakScanner
+            self._client_class = BleakClient
+
+    async def discover(self, address, adapter, timeout):
+        self.prepare()
+        devices = await self._scanner_class.discover(
             timeout=timeout,
             return_adv=True,
             bluez={"adapter": adapter},
@@ -176,9 +187,8 @@ class BleakBackend:
         return None, None
 
     def client(self, device, timeout):
-        from bleak import BleakClient
-
-        return BleakClient(device, timeout=timeout, pair=False)
+        self.prepare()
+        return self._client_class(device, timeout=timeout, pair=False)
 
 
 def _new_operation_record(plan, op):
@@ -323,6 +333,9 @@ async def execute_plan(
                                 f"{disconnect_record['error']}"
                             )
                     auth = validate_authorization_scope(authorization)
+                    prepare_backend = getattr(backend, "prepare", None)
+                    if prepare_backend is not None:
+                        prepare_backend()
                     if not rf_started:
                         mark_rf_started(safety_state_dir)
                         rf_started = True

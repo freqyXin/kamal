@@ -233,6 +233,13 @@ class BluetoothSecurityContractTests(unittest.TestCase):
         self.assertTrue(policy["mutates_security_state"])
         self.assertFalse(policy["requires_secret_access"])
 
+    def test_analyze_key_material_is_local_secret_operation(self):
+        policy = operation_policy("analyze_key_material")
+        self.assertEqual(policy["execution_domain"], "local")
+        self.assertFalse(policy["transmit_capable"])
+        self.assertFalse(policy["mutates_security_state"])
+        self.assertTrue(policy["requires_secret_access"])
+
     def test_pair_target_is_not_silently_added_to_gatt_planner(self):
         request = {
             "schema_version": "0.12.0",
@@ -306,6 +313,21 @@ class BluetoothSecurityContractTests(unittest.TestCase):
         value = key_evidence()
         value["raw_key_hex"] = "00" * 16
         with self.assertRaisesRegex(BluetoothSecurityContractError, "raw secret"):
+            validate_bluetooth_key_evidence(value)
+
+    def test_key_evidence_can_reference_existing_store_without_pairing_session(self):
+        value = key_evidence()
+        value["pairing_session_ref"] = None
+        value["source"]["kind"] = "bluez_store"
+        value["source"]["section"] = "LongTermKey"
+        normalized = validate_bluetooth_key_evidence(value)
+        self.assertIsNone(normalized["pairing_session_ref"])
+        self.assertEqual(normalized["source"]["section"], "LongTermKey")
+
+    def test_key_evidence_rejects_empty_source_section(self):
+        value = key_evidence()
+        value["source"]["section"] = ""
+        with self.assertRaisesRegex(BluetoothSecurityContractError, "source.section"):
             validate_bluetooth_key_evidence(value)
 
     def test_non_ltk_cannot_claim_encryption_size(self):

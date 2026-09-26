@@ -196,8 +196,28 @@ sudo .venv/bin/python bin/kamal-inspect-bluez-state \
 ```
 
 This command does not scan, connect, pair, modify a bond, or emit raw Bluetooth
-key values. Pairing, key extraction/copying, RPA resolution, and capture
-decryption remain separately gated work.
+key values.
+
+BLE-SEC-03 adds local analysis of recognized 128-bit key material already present
+in one exact BlueZ persistent `info` record:
+
+```bash
+sudo .venv/bin/python bin/kamal-analyze-bluez-keys \
+  --adapter AA:BB:CC:DD:EE:01 \
+  --target AA:BB:CC:DD:EE:FF \
+  --engagement-id engagement:example \
+  --authorization-ref auth:example \
+  --pairing-session-ref pairing:example \
+  --json /tmp/bluez-key-analysis.json
+```
+
+The analyzer reads raw key values transiently only to validate, fingerprint, and
+perform bounded local checks. It does not print them or create a second plaintext
+copy. The redacted report references the original root-controlled BlueZ `info`
+file as an `os_protected_source`. A pairing-session reference is optional for
+pre-existing bonds whose creation session is not known. Pairing, bond mutation,
+RPA resolution, key injection into capture tools, and capture decryption remain
+separately gated work.
 
 ### Releases
 

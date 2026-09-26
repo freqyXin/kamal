@@ -479,11 +479,19 @@ def validate_bluetooth_key_evidence(value):
     _contract_header(value, "bluetooth_key_evidence")
 
     source = _object(value.get("source"), "source")
-    _reject_unknown_fields(source, {"kind", "artifact_ref"}, "source")
+    _reject_unknown_fields(source, {"kind", "artifact_ref", "section"}, "source")
+    source_section = source.get("section")
+    if source_section is not None:
+        source_section = _nonempty(source_section, "source.section")
     source = {
         "kind": _enum(source.get("kind"), "source.kind", KEY_SOURCE_KINDS),
         "artifact_ref": _nonempty(source.get("artifact_ref"), "source.artifact_ref"),
+        "section": source_section,
     }
+
+    pairing_session_ref = value.get("pairing_session_ref")
+    if pairing_session_ref is not None:
+        pairing_session_ref = _nonempty(pairing_session_ref, "pairing_session_ref")
 
     key_class = _enum(value.get("key_class"), "key_class", KEY_CLASSES)
     key_bytes = _bounded_int(value.get("key_bytes"), "key_bytes", minimum=16, maximum=16)
@@ -510,9 +518,7 @@ def validate_bluetooth_key_evidence(value):
             value.get("authorization_ref"), "authorization_ref"
         ),
         "target": _target(value.get("target")),
-        "pairing_session_ref": _nonempty(
-            value.get("pairing_session_ref"), "pairing_session_ref"
-        ),
+        "pairing_session_ref": pairing_session_ref,
         "key_class": key_class,
         "key_bytes": key_bytes,
         "key_fingerprint_sha256": _sha256(

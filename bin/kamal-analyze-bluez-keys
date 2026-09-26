@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Analyze persisted BlueZ key material without emitting raw key values."""
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kamal.bluez_key_evidence import (  # noqa: E402
+    DEFAULT_BLUEZ_ROOT,
+    BlueZKeyEvidenceError,
+    analyze_bluez_keys,
+)
+from kamal.evidence_contracts import atomic_create_json  # noqa: E402
+
+
+def parser():
+    result = argparse.ArgumentParser(
+        description=(
+            "Analyze recognized 128-bit Bluetooth key material already stored in "
+            "one exact BlueZ persistent record. Raw key values are read only in "
+            "memory and are not emitted or copied by this command."
+        )
+    )
+    result.add_argument("--adapter", required=True)
+    result.add_argument("--target", required=True)
+    result.add_argument("--engagement-id", required=True)
+    result.add_argument("--authorization-ref", required=True)
+    result.add_argument("--pairing-session-ref")
+    result.add_argument("--bluez-root", type=Path, default=DEFAULT_BLUEZ_ROOT)
+    result.add_argument("--observed-at-utc")
+    result.add_argument("--json", required=True, type=Path)
+    return result
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        report = analyze_bluez_keys(
+            args.bluez_root,
+            adapter_address=args.adapter,
+            target_address=args.target,
+            engagement_id=args.engagement_id,
+            authorization_ref=args.authorization_ref,
+            pairing_session_ref=args.pairing_session_ref,
+            observed_at_utc=args.observed_at_utc,
+        )
+        atomic_create_json(args.json, report)
+    except (OSError, BlueZKeyEvidenceError, ValueError, TypeError) as exc:
+        print(f"kamal-analyze-bluez-keys: {exc}", file=sys.stderr)
+        return 1
+
+    summary = report["summary"]
+    print(f"BlueZ key-analysis report written to {args.json}")
+    print(f"Recognized key records analyzed: {summary['key_count']}")
+    print(
+        "Key classes: "
+        + (", ".join(summary["key_classes"]) if summary["key_classes"] else "none")
+    )
+    print(
+        "Raw Bluetooth key values were read transiently from the existing "
+        "OS-protected BlueZ source but were not printed, copied, or persisted "
+        "by this command."
+    )
+    print("No RF or network operations were performed; BlueZ state was not modified.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

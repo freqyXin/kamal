@@ -53,6 +53,40 @@ sudo .venv/bin/python bin/kamal-inspect-bluez-state \
 
 Root access may be required to read `/var/lib/bluetooth`. The output itself contains metadata and hashes only; raw Bluetooth key values are not emitted or persisted in the report.
 
+## BLE-SEC-03: protected BlueZ key evidence
+
+`bin/kamal-analyze-bluez-keys` analyzes recognized 128-bit Bluetooth key material already present in one exact BlueZ persistent `info` record. It is a local secret-using operation: no Bluetooth discovery, connection, pairing, controller management, RF activity, or network access occurs.
+
+The analyzer deliberately does **not** create a second plaintext key file. Raw `Key=` values are held transiently in process memory only long enough to validate the 128-bit representation, calculate SHA-256 fingerprints, and perform bounded local pattern checks. The original BlueZ `info` file remains the secret-bearing artifact and is represented as `storage_state: os_protected_source`. The source path, whole-file SHA-256, size, permissions and timestamp are recorded so a later secret-dependent operation can require the exact source bytes.
+
+The redacted analysis report contains:
+
+- one `secret_evidence_artifact` metadata record describing the original protected BlueZ source;
+- one `bluetooth_key_evidence` record per recognized LTK, IRK, CSRK or BR/EDR link key;
+- the SHA-256 fingerprint and exact 16-byte length of each key;
+- BlueZ section provenance and safe metadata such as `Authenticated`, `EncSize`, `EDiv`, `Rand`, `Type`, PIN length and signing counters when present;
+- obvious-pattern observations such as all-zero/all-`ff`, repeated-byte patterns and simple ascending/descending sequences;
+- duplicate fingerprint observations within the same BlueZ source; and
+- explicit limitations when pairing-session provenance, Secure Connections, debug-key state or another property is not established.
+
+A duplicate fingerprint within one BlueZ `info` file is not automatically a cross-device key-reuse finding. Likewise, an obvious pattern flag is evidence for analyst review, not by itself a claim of defective entropy. Cross-device reuse analysis requires an authorized corpus of independently derived key-evidence records.
+
+Example:
+
+```bash
+sudo .venv/bin/python bin/kamal-analyze-bluez-keys \
+  --adapter AA:BB:CC:DD:EE:01 \
+  --target AA:BB:CC:DD:EE:FF \
+  --engagement-id engagement:example \
+  --authorization-ref auth:example \
+  --pairing-session-ref pairing:example \
+  --json /tmp/bluez-key-analysis.json
+```
+
+`--pairing-session-ref` may be omitted for a pre-existing bond whose creating pairing session is not known; the resulting key evidence keeps that provenance `null` and records the limitation rather than inventing a session.
+
+The command reports that raw secrets were read transiently, but it never prints raw key values and never serializes them into the analytical JSON. The analyzer requires the selected BlueZ source file and its root/adapter/device directories to be access-restricted before it labels the source `os_protected_source`; group/other-accessible sources fail closed. Python does not provide a hard guarantee that every transient in-memory copy is immediately zeroized; encrypted K'amal-owned secret export/storage remains a separate future work package.
+
 ## Pairing session
 
 A `bluetooth_pairing_session` captures requested pair/bond behavior and evidence-limited before/after observations.
@@ -134,7 +168,8 @@ Ordinary key evidence contains metadata and a fingerprint, never the raw key:
   "debug_key": false,
   "source": {
     "kind": "bluez_mgmt",
-    "artifact_ref": "artifact:mgmt-key-event"
+    "artifact_ref": "artifact:mgmt-key-event",
+    "section": null
   },
   "secret_artifact_ref": "secret-artifact:bond-example",
   "raw_key_embedded": false,
@@ -142,7 +177,7 @@ Ordinary key evidence contains metadata and a fingerprint, never the raw key:
 }
 ```
 
-Supported analytical key classes are `ltk`, `irk`, `csrk`, and `link_key`. `encryption_size` is only valid for LTK evidence in this contract.
+Supported analytical key classes are `ltk`, `irk`, `csrk`, and `link_key`. `encryption_size` is only valid for LTK evidence in this contract. `pairing_session_ref` may be `null` when an existing protected store does not establish the creating session; `source.section` may identify the exact BlueZ section that supplied the key.
 
 Raw key material belongs in a separately protected `secret_evidence_artifact`, classified `highly_restricted`. Its metadata records content hash, size, secret classes, and storage state without embedding the secret itself.
 

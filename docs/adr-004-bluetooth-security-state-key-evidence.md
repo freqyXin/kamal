@@ -1,8 +1,8 @@
 # ADR-004: Bluetooth security-state, pairing/bonding, and key-aware evidence contracts
 
-**Status:** Accepted for v0.12 contract design. Pairing execution, key extraction/copying, capture decryption, and RPA-resolution execution are deferred to later BLE-SEC work packages.
+**Status:** Accepted for v0.12 contract design and incremental implementation. Pairing execution, raw-key export/copying into K'amal-owned storage, capture decryption, and RPA-resolution execution remain deferred to later BLE-SEC work packages.
 
-**Implementation status:** BLE-SEC-02 implements `inspect_security_state` for one exact target using BlueZ's existing filesystem cache/persistent store. The reader is local and read-only, redacts every `Key=` value before structured parsing, and emits no `bluetooth_key_evidence` record yet. Live D-Bus/MGMT observation, pairing/bond execution, protected raw-key collection, RPA resolution, and capture decryption remain later work packages.
+**Implementation status:** BLE-SEC-02 implements `inspect_security_state` for one exact target using BlueZ's existing filesystem cache/persistent store. BLE-SEC-03 implements local analysis of recognized 128-bit key material in an existing BlueZ persistent `info` record: raw values are read transiently, fingerprinted and analyzed in memory, but are not printed or copied into a second plaintext artifact. The original root-controlled `info` file is represented as an `os_protected_source`, while normal output contains `bluetooth_key_evidence`, fingerprints, safe metadata and limitations only. Live D-Bus/MGMT observation, pairing/bond execution, encrypted K'amal-owned key export, RPA resolution, and capture decryption remain later work packages.
 
 ## Context
 
@@ -106,18 +106,18 @@ BLE-SEC-01 reserves `resolve_rpa` as a local secret-using operation class. Later
 
 ## Consequences
 
-K'amal gains a stable vocabulary and strict data boundary before touching pairing or raw key material. Future BLE-SEC work can implement BlueZ/MGMT collection, pairing, nRF capture, decryption, and RPA resolution without weakening the existing GATT planner or conflating evidence layers.
+K'amal gains a stable vocabulary and strict data boundary before pairing or state mutation. BLE-SEC-03 may transiently read raw key values from an explicitly selected, operating-system-protected BlueZ source solely to derive redacted evidence; it does not widen GATT execution scope or create another plaintext key store. Future BLE-SEC work can implement BlueZ/MGMT collection, pairing, nRF capture, decryption, and RPA resolution without weakening the existing GATT planner or conflating evidence layers.
 
 The immediate cost is additional artifact types and secret-handling policy. Implementations must maintain two evidence paths: redacted analytical records suitable for ordinary reports and highly restricted secret-bearing artifacts suitable only for explicitly authorized local analysis.
 
-## Deferred implementation
+## Deferred implementation after BLE-SEC-03
 
-BLE-SEC-01 does **not**:
+The following capabilities remain deferred:
 
 - call `BleakClient(..., pair=True)`;
 - invoke BlueZ pairing methods;
 - create/remove a bond;
-- read/copy `/var/lib/bluetooth` key values;
+- copy/export `/var/lib/bluetooth` key values into K'amal-owned plaintext or encrypted secret storage;
 - subscribe to BlueZ MGMT key events;
 - start the nRF sniffer;
 - inject keys into Wireshark/TShark/nrfutil;

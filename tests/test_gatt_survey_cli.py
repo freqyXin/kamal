@@ -354,7 +354,9 @@ class GattSurveyCLITests(unittest.TestCase):
 
             device = SimpleNamespace(address=address)
             advertisement = SimpleNamespace()
+            scanner = SimpleNamespace(stop=AsyncMock())
             fake_discovery = AsyncMock(return_value=(
+                scanner,
                 {
                     "discovered_count": 1,
                     "permitted_count": 1,
@@ -370,6 +372,7 @@ class GattSurveyCLITests(unittest.TestCase):
             ))
 
             async def inspect(**kwargs):
+                self.assertEqual(scanner.stop.await_count, 0)
                 return (
                     self.successful_report(
                         kwargs["device"].address,
@@ -379,7 +382,7 @@ class GattSurveyCLITests(unittest.TestCase):
                 )
 
             with patch(
-                "kamal.gatt_survey.discover_target_records",
+                "kamal.gatt_survey.start_live_target_record_discovery",
                 fake_discovery,
             ), patch.object(
                 self.cli,
@@ -426,6 +429,16 @@ class GattSurveyCLITests(unittest.TestCase):
                 "enumerate_gatt_metadata",
             )
             self.assertEqual(manifest["safety_interlock"]["state"], "clear")
+            self.assertEqual(
+                manifest["scanner_lifecycle"],
+                {
+                    "kept_active_through_execution": True,
+                    "stop_attempted": True,
+                    "stop_completed": True,
+                    "error": None,
+                },
+            )
+            scanner.stop.assert_awaited_once()
             self.assertTrue((output_dir / "survey-execution-request.json").exists())
             report = json.loads((output_dir / "device-001.json").read_text())
             self.assertEqual(report["authorization"]["sha256"], digest)
@@ -445,6 +458,7 @@ class GattSurveyCLITests(unittest.TestCase):
             output_dir = tempdir / "results"
             safety_dir = tempdir / "safety"
             fake_discovery = AsyncMock(return_value=(
+                SimpleNamespace(stop=AsyncMock()),
                 {
                     "discovered_count": 1,
                     "permitted_count": 1,
@@ -461,7 +475,7 @@ class GattSurveyCLITests(unittest.TestCase):
             inspect = AsyncMock()
 
             with patch(
-                "kamal.gatt_survey.discover_target_records",
+                "kamal.gatt_survey.start_live_target_record_discovery",
                 fake_discovery,
             ), patch.object(
                 self.cli,
@@ -524,6 +538,7 @@ class GattSurveyCLITests(unittest.TestCase):
             output_dir = tempdir / "results"
             safety_dir = tempdir / "safety"
             fake_discovery = AsyncMock(return_value=(
+                SimpleNamespace(stop=AsyncMock()),
                 {
                     "discovered_count": 1,
                     "permitted_count": 1,
@@ -548,7 +563,7 @@ class GattSurveyCLITests(unittest.TestCase):
                 )
 
             with patch(
-                "kamal.gatt_survey.discover_target_records",
+                "kamal.gatt_survey.start_live_target_record_discovery",
                 fake_discovery,
             ), patch.object(
                 self.cli,
@@ -660,6 +675,7 @@ class GattSurveyCLITests(unittest.TestCase):
             output_dir = tempdir / "results"
             safety_dir = tempdir / "safety"
             fake_discovery = AsyncMock(return_value=(
+                SimpleNamespace(stop=AsyncMock()),
                 {
                     "discovered_count": 1,
                     "permitted_count": 1,
@@ -687,7 +703,7 @@ class GattSurveyCLITests(unittest.TestCase):
                 return report, 6
 
             with patch(
-                "kamal.gatt_survey.discover_target_records",
+                "kamal.gatt_survey.start_live_target_record_discovery",
                 fake_discovery,
             ), patch.object(
                 self.cli,
@@ -725,6 +741,95 @@ class GattSurveyCLITests(unittest.TestCase):
             self.assertEqual(
                 manifest["safety_interlock"]["state"],
                 "recovery_required",
+            )
+            self.assertFalse((safety_dir / "active-run.json").exists())
+            self.assertTrue((safety_dir / "unsafe-stop.json").exists())
+
+    def test_active_survey_scanner_stop_failure_latches_recovery(self):
+        address = "AA:BB:CC:DD:EE:FF"
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            tempdir = Path(tempdir)
+            allowlist = tempdir / "allowlist.json"
+            allowlist.write_text(json.dumps([address]), encoding="utf-8")
+            authorization = self.write_survey_authorization(tempdir, [address])
+            output_dir = tempdir / "results"
+            safety_dir = tempdir / "safety"
+            scanner = SimpleNamespace(
+                stop=AsyncMock(side_effect=RuntimeError("scanner stop failed"))
+            )
+            fake_discovery = AsyncMock(return_value=(
+                scanner,
+                {
+                    "discovered_count": 1,
+                    "permitted_count": 1,
+                    "target_count": 1,
+                    "omitted_by_cap": 0,
+                    "targets": [address],
+                },
+                [{
+                    "address": address,
+                    "device": SimpleNamespace(address=address),
+                    "advertisement": SimpleNamespace(),
+                }],
+            ))
+
+            async def inspect(**kwargs):
+                return (
+                    self.successful_report(
+                        kwargs["device"].address,
+                        kwargs["authorization_provenance"],
+                    ),
+                    0,
+                )
+
+            with patch(
+                "kamal.gatt_survey.start_live_target_record_discovery",
+                fake_discovery,
+            ), patch.object(
+                self.cli,
+                "load_gatt_registries",
+                return_value=({}, {}),
+            ), patch.object(
+                self.cli,
+                "inspect_discovered_device",
+                new=AsyncMock(side_effect=inspect),
+            ):
+                status, _, stderr = self.run_async_main([
+                    "survey",
+                    "--allowlist",
+                    str(allowlist),
+                    "--execute",
+                    "--authorization",
+                    str(authorization),
+                    "--safety-state-dir",
+                    str(safety_dir),
+                    "--discover-seconds",
+                    "1",
+                    "--max-devices",
+                    "1",
+                    "--timeout",
+                    "5",
+                    "--output-dir",
+                    str(output_dir),
+                ])
+
+            self.assertEqual(status, 12)
+            self.assertEqual(stderr, "")
+            scanner.stop.assert_awaited_once()
+            manifest = json.loads(
+                (output_dir / "survey-manifest.json").read_text()
+            )
+            self.assertEqual(manifest["phase"], "stopped_unsafe")
+            self.assertEqual(
+                manifest["safety_interlock"]["state"],
+                "recovery_required",
+            )
+            self.assertTrue(manifest["scanner_lifecycle"]["stop_attempted"])
+            self.assertFalse(manifest["scanner_lifecycle"]["stop_completed"])
+            self.assertIn(
+                "scanner stop failed",
+                manifest["scanner_lifecycle"]["error"],
             )
             self.assertFalse((safety_dir / "active-run.json").exists())
             self.assertTrue((safety_dir / "unsafe-stop.json").exists())

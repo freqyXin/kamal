@@ -286,8 +286,8 @@ async def async_main(argv=None):
             build_execution_manifest,
             cleanup_is_safe,
             discover_target_queue,
-            discover_target_records,
             run_survey_records,
+            start_live_target_record_discovery,
             validate_discovery_settings,
             validate_survey_timeout,
         )
@@ -410,6 +410,8 @@ async def async_main(argv=None):
         lease_acquired = False
         survey_run_id = None
         survey_request_sha256 = None
+        survey_scanner = None
+        scanner_lifecycle = None
 
         if args.execute:
             survey_request = {
@@ -467,12 +469,20 @@ async def async_main(argv=None):
 
         try:
             if args.execute:
-                discovery, records = await discover_target_records(
-                    policy=policy,
-                    adapter=args.adapter,
-                    discover_seconds=args.discover_seconds,
-                    max_devices=args.max_devices,
+                survey_scanner, discovery, records = (
+                    await start_live_target_record_discovery(
+                        policy=policy,
+                        adapter=args.adapter,
+                        discover_seconds=args.discover_seconds,
+                        max_devices=args.max_devices,
+                    )
                 )
+                scanner_lifecycle = {
+                    "kept_active_through_execution": True,
+                    "stop_attempted": False,
+                    "stop_completed": False,
+                    "error": None,
+                }
             else:
                 discovery = await discover_target_queue(
                     policy=policy,
@@ -511,6 +521,23 @@ async def async_main(argv=None):
             )
             return 10
 
+        async def stop_active_survey_scanner():
+            nonlocal survey_scanner, scanner_lifecycle
+
+            if survey_scanner is None:
+                return True
+
+            scanner_lifecycle["stop_attempted"] = True
+            try:
+                await survey_scanner.stop()
+            except Exception as exc:
+                scanner_lifecycle["error"] = f"{type(exc).__name__}: {exc}"
+                return False
+
+            scanner_lifecycle["stop_completed"] = True
+            survey_scanner = None
+            return True
+
         if args.execute:
             try:
                 normalized_authorization = validate_gatt_survey_authorization(
@@ -523,10 +550,29 @@ async def async_main(argv=None):
                 )
             except (ContractValidationError, TypeError, KeyError) as exc:
                 safety_error = None
+                scanner_safe = await stop_active_survey_scanner()
+
                 if lease_acquired:
                     try:
-                        release_active_run(args.safety_state_dir)
-                        lease_acquired = False
+                        if scanner_safe:
+                            release_active_run(args.safety_state_dir)
+                            lease_acquired = False
+                        else:
+                            latch_unsafe_stop(
+                                args.safety_state_dir,
+                                plan_id=survey_run_id,
+                                reason=(
+                                    "active GATT survey authorization failed "
+                                    "and scanner cleanup was unconfirmed"
+                                ),
+                                cleanup={
+                                    "phase": "scanner_stop",
+                                    "completed": False,
+                                    "error": scanner_lifecycle["error"],
+                                },
+                                output_dir=args.output_dir,
+                            )
+                            lease_acquired = False
                     except SafetyInterlockError as release_exc:
                         safety_error = release_exc
 
@@ -556,8 +602,17 @@ async def async_main(argv=None):
                         "path": "survey-execution-request.json",
                         "sha256": survey_request_sha256,
                     },
+                    "scanner_lifecycle": scanner_lifecycle,
                     "safety_interlock": {
-                        "state": "clear" if safety_error is None else "uncertain",
+                        "state": (
+                            "clear"
+                            if scanner_safe and safety_error is None
+                            else (
+                                "recovery_required"
+                                if not scanner_safe and safety_error is None
+                                else "uncertain"
+                            )
+                        ),
                         "state_dir": str(args.safety_state_dir.resolve()),
                         "error": (
                             None
@@ -572,6 +627,12 @@ async def async_main(argv=None):
                     print(f"Survey output error: {output_exc}", file=sys.stderr)
                 if safety_error is not None:
                     print(f"Survey safety error: {safety_error}", file=sys.stderr)
+                    return 14
+                if not scanner_safe:
+                    print(
+                        "Survey safety error: scanner cleanup was not confirmed",
+                        file=sys.stderr,
+                    )
                     return 14
                 print(f"Survey authorization error: {exc}", file=sys.stderr)
                 return 9
@@ -612,6 +673,7 @@ async def async_main(argv=None):
                 "path": "survey-execution-request.json",
                 "sha256": survey_request_sha256,
             }
+            manifest["scanner_lifecycle"] = scanner_lifecycle
             manifest["safety_interlock"] = {
                 "state": "active",
                 "state_dir": str(args.safety_state_dir.resolve()),
@@ -636,7 +698,14 @@ async def async_main(argv=None):
             elif final:
                 manifest["phase"] = (
                     "completed"
-                    if manifest["execution"]["complete"]
+                    if (
+                        manifest["execution"]["complete"]
+                        and (
+                            manifest.get("safety_interlock", {})
+                            .get("state")
+                            == "clear"
+                        )
+                    )
                     else "stopped_unsafe"
                 )
             else:
@@ -690,6 +759,11 @@ async def async_main(argv=None):
                         current_outcome["report"]
                     )
 
+                scanner_safe = await stop_active_survey_scanner()
+                abort_cleanup_confirmed = (
+                    abort_cleanup_confirmed and scanner_safe
+                )
+
                 try:
                     if abort_cleanup_confirmed:
                         release_active_run(args.safety_state_dir)
@@ -701,23 +775,37 @@ async def async_main(argv=None):
                         }
                     else:
                         cleanup = (
-                            current_outcome["report"].get("disconnect")
-                            if current_outcome is not None
-                            else {
-                                "phase": "survey_abort",
+                            {
+                                "phase": "scanner_stop",
                                 "completed": False,
-                                "error": (
-                                    f"{type(exc.cause).__name__}: {exc.cause}"
-                                ),
+                                "error": scanner_lifecycle["error"],
                             }
+                            if not scanner_safe
+                            else (
+                                current_outcome["report"].get("disconnect")
+                                if current_outcome is not None
+                                else {
+                                    "phase": "survey_abort",
+                                    "completed": False,
+                                    "error": (
+                                        f"{type(exc.cause).__name__}: {exc.cause}"
+                                    ),
+                                }
+                            )
                         )
+                        reason = (
+                            "active GATT survey aborted with unconfirmed cleanup: "
+                            f"{type(exc.cause).__name__}: {exc.cause}"
+                        )
+                        if not scanner_safe:
+                            reason += (
+                                "; scanner cleanup failed: "
+                                f"{scanner_lifecycle['error']}"
+                            )
                         latch_unsafe_stop(
                             args.safety_state_dir,
                             plan_id=survey_run_id,
-                            reason=(
-                                "active GATT survey aborted with unconfirmed cleanup: "
-                                f"{type(exc.cause).__name__}: {exc.cause}"
-                            ),
+                            reason=reason,
                             cleanup=cleanup,
                             output_dir=args.output_dir,
                             current_target={
@@ -757,9 +845,31 @@ async def async_main(argv=None):
                 ),
                 None,
             )
+            scanner_safe = await stop_active_survey_scanner()
 
             try:
-                if unsafe_outcome is not None:
+                if not scanner_safe:
+                    latch_unsafe_stop(
+                        args.safety_state_dir,
+                        plan_id=survey_run_id,
+                        reason=(
+                            "active GATT survey scanner cleanup was not confirmed: "
+                            f"{scanner_lifecycle['error']}"
+                        ),
+                        cleanup={
+                            "phase": "scanner_stop",
+                            "completed": False,
+                            "error": scanner_lifecycle["error"],
+                        },
+                        output_dir=args.output_dir,
+                    )
+                    lease_acquired = False
+                    manifest["safety_interlock"] = {
+                        "state": "recovery_required",
+                        "state_dir": str(args.safety_state_dir.resolve()),
+                        "error": None,
+                    }
+                elif unsafe_outcome is not None:
                     latch_unsafe_stop(
                         args.safety_state_dir,
                         plan_id=survey_run_id,
@@ -805,7 +915,9 @@ async def async_main(argv=None):
 
         execution = manifest["execution"]
         if (
-            not execution["complete"]
+            manifest.get("phase") != "completed"
+            or manifest.get("safety_interlock", {}).get("state") != "clear"
+            or not execution["complete"]
             or execution["failed_count"] != 0
         ):
             return 12

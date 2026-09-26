@@ -21,7 +21,12 @@ remaining plan operations are not attempted.  Active survey execution holds one
 lease across discovery and the sequential device queue.  It releases the lease
 only after every attempted device has confirmed-safe cleanup; an unsafe survey
 disconnect or unexpected abort with unconfirmed cleanup publishes the same
-recovery-required latch used by the bounded executor.
+recovery-required latch used by the bounded executor. During an active BlueZ
+survey, the discovery scanner is intentionally kept running while the frozen
+target queue is inspected so transient BlueZ device objects remain available to
+Bleak. Scanner shutdown is therefore part of survey cleanup: the lease is not
+released as clear until scanner stop is confirmed, and an unconfirmed scanner
+stop publishes the recovery-required latch.
 
 ## Connection loss
 

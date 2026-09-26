@@ -38,6 +38,13 @@ operations or write permissions, must match the CLI's acknowledged
 all-discovered policy, and remains bounded by the authorization's operation-count
 and timeout limits.
 
+For BlueZ-backed active surveys, the discovery scanner remains active after the
+target snapshot is frozen and through the sequential metadata-enumeration queue.
+This is a transport-lifecycle requirement, not a scope expansion: the frozen
+queue is authoritative, and later advertisements are ignored for target
+selection. Scanner shutdown must complete before the persistent safety lease may
+be released as clear.
+
 All other operation classes fail closed. Writes require layered opt-in. A
 write-without-response (`command`) requires an additional explicit permission.
 Operation count, payload size, timeouts, and subscription duration have both

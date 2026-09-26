@@ -154,6 +154,15 @@ when present, are recorded in the survey manifest and each per-device
 A `survey-execution-request.json` artifact is written before RF and its SHA-256
 binds the persistent safety lease for that survey run.
 
+On BlueZ, active survey execution keeps the scanner that produced the frozen
+runtime target queue active while the sequential connection phase runs. This
+preserves the underlying BlueZ device objects used by Bleak; stopping discovery
+before the connection phase can remove transient D-Bus device objects even when
+the Python `BLEDevice` objects were retained. The queue itself remains frozen at
+the end of the configured discovery window, so advertisements observed later do
+not expand the run. Scanner stop is part of required cleanup and is recorded in
+the survey manifest.
+
 Example shape:
 
 ```text

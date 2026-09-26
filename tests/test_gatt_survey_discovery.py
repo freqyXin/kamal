@@ -146,3 +146,99 @@ class SurveyRecordTests(unittest.TestCase):
         self.assertEqual(records[0]["address"], "AA:BB:CC:DD:EE:01")
         self.assertIsNotNone(records[0]["device"])
         self.assertIsNotNone(records[0]["advertisement"])
+
+
+class FakeLiveScanner:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.started = False
+        self.stopped = False
+        self.discovered_devices_and_advertisement_data = {
+            "AA:BB:CC:DD:EE:02": (object(), object()),
+            "AA:BB:CC:DD:EE:01": (object(), object()),
+        }
+        type(self).instances.append(self)
+
+    async def start(self):
+        self.started = True
+
+    async def stop(self):
+        self.stopped = True
+
+
+class BrokenSnapshotScanner(FakeLiveScanner):
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.started = False
+        self.stopped = False
+        type(self).instances.append(self)
+
+    @property
+    def discovered_devices_and_advertisement_data(self):
+        raise RuntimeError("snapshot failed")
+
+
+class LiveSurveyDiscoveryTests(unittest.TestCase):
+    def test_keeps_scanner_active_after_snapshot(self):
+        from kamal.gatt_survey import start_live_target_record_discovery
+
+        FakeLiveScanner.instances = []
+        policy = SurveyTargetPolicy(
+            mode="all_discovered",
+            acknowledge_scope=True,
+        )
+
+        async def no_sleep(_seconds):
+            return None
+
+        scanner, summary, records = asyncio.run(
+            start_live_target_record_discovery(
+                policy=policy,
+                adapter="hci0",
+                discover_seconds=5,
+                max_devices=10,
+                scanner_factory=FakeLiveScanner,
+                sleep=no_sleep,
+            )
+        )
+
+        self.assertTrue(scanner.started)
+        self.assertFalse(scanner.stopped)
+        self.assertEqual(scanner.kwargs, {"bluez": {"adapter": "hci0"}})
+        self.assertEqual(summary["target_count"], 2)
+        self.assertEqual(
+            [record["address"] for record in records],
+            ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"],
+        )
+
+        asyncio.run(scanner.stop())
+        self.assertTrue(scanner.stopped)
+
+    def test_stops_scanner_if_snapshot_fails(self):
+        from kamal.gatt_survey import start_live_target_record_discovery
+
+        BrokenSnapshotScanner.instances = []
+        policy = SurveyTargetPolicy(
+            mode="all_discovered",
+            acknowledge_scope=True,
+        )
+
+        async def no_sleep(_seconds):
+            return None
+
+        with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+            asyncio.run(
+                start_live_target_record_discovery(
+                    policy=policy,
+                    adapter="hci0",
+                    discover_seconds=5,
+                    max_devices=10,
+                    scanner_factory=BrokenSnapshotScanner,
+                    sleep=no_sleep,
+                )
+            )
+
+        self.assertEqual(len(BrokenSnapshotScanner.instances), 1)
+        self.assertTrue(BrokenSnapshotScanner.instances[0].stopped)

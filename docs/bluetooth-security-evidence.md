@@ -20,7 +20,38 @@ See [ADR-004](adr-004-bluetooth-security-state-key-evidence.md) for the design d
 | `decrypt_capture` | local | no | no | yes |
 | `resolve_rpa` | local | no | no | yes |
 
-These names are **not** executable operations yet. The existing `gatt_operation_request` deliberately continues to reject them.
+These names are not automatically executable through the GATT planner. BLE-SEC-02 implements only the local, read-only `inspect_security_state` filesystem adapter; the active/state-mutating classes remain non-executable.
+
+## BLE-SEC-02: read-only BlueZ persistent-state inspection
+
+`bin/kamal-inspect-bluez-state` inspects one exact target already present under a BlueZ adapter directory. It reads only existing filesystem state and performs no discovery, connection, pairing, controller-management, or network operation.
+
+The report preserves:
+
+- BlueZ root and adapter directory mode/UID/GID/mtime;
+- exact cache and persistent `info` artifact path, SHA-256, byte size, mode/UID/GID/mtime when present;
+- safe `General` metadata such as name, address type, `Trusted`, `Blocked`, and `WakeAllowed` when parseable;
+- recognized security section names and non-secret metadata such as `Authenticated`, `EncSize`, `EDiv`, `Rand`, key type, PIN length, and signing counters when present;
+- whether a `Key=` field exists in a recognized section, without retaining or emitting its value;
+- a conservative `bluetooth_security_state` derived only from what the persistent store can support; and
+- explicit limitations for current pairing, connection, encryption, association-model, Secure-Connections, and application-authorization state.
+
+Every field named `Key` is discarded before structured output, even inside an unrecognized future section. A recognized key section with a `Key=` field may support `bonded=true` for the persistent-store observation. An `info` record with no recognized key section may support `bonded=false`. If no persistent `info` record exists, `bonded` remains `null`: absence of a file at that exact adapter/address path is useful evidence that no state is stored there, but it is not proof that the device has never paired or bonded elsewhere.
+
+The reader refuses symbolic-link BlueZ records/directories and bounds each metadata file to 1 MiB. It hashes the original file bytes for provenance without exposing their raw contents. BLE-SEC-02 deliberately does **not** create `bluetooth_key_evidence` or protected secret artifacts; that begins in BLE-SEC-03.
+
+Example:
+
+```bash
+sudo .venv/bin/python bin/kamal-inspect-bluez-state \
+  --adapter 88:A2:9E:C6:E9:09 \
+  --target 00:1C:4D:45:DE:3F \
+  --engagement-id engagement:example \
+  --authorization-ref auth:example \
+  --json /tmp/bluez-security-state.json
+```
+
+Root access may be required to read `/var/lib/bluetooth`. The output itself contains metadata and hashes only; raw Bluetooth key values are not emitted or persisted in the report.
 
 ## Pairing session
 

@@ -2,6 +2,8 @@
 
 **Status:** Accepted for v0.12 contract design. Pairing execution, key extraction/copying, capture decryption, and RPA-resolution execution are deferred to later BLE-SEC work packages.
 
+**Implementation status:** BLE-SEC-02 implements `inspect_security_state` for one exact target using BlueZ's existing filesystem cache/persistent store. The reader is local and read-only, redacts every `Key=` value before structured parsing, and emits no `bluetooth_key_evidence` record yet. Live D-Bus/MGMT observation, pairing/bond execution, protected raw-key collection, RPA resolution, and capture decryption remain later work packages.
+
 ## Context
 
 K'amal's v0.12 active GATT path already separates authorization, bounded RF execution, transport/protocol outcome, application effect, security effect, and persistent safety state. Hardware validation has now exposed the next security boundary: an authorized read may succeed while an exact-value write is rejected with ATT `Insufficient Authorization`, and the host may have no persistent bond state for the target.

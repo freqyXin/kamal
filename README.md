@@ -179,11 +179,25 @@ See [Bluetooth identifier registry setup](data/bluetooth/README.md).
 For capture hardware setup, see
 [BLE sniffer documentation](docs/ble-sniffer.md).
 
-For the v0.12 non-executing Bluetooth pairing/security-state/key-evidence
-contracts, see [Bluetooth security evidence](docs/bluetooth-security-evidence.md)
-and [ADR-004](docs/adr-004-bluetooth-security-state-key-evidence.md). These
-contracts do not yet enable pairing, bond changes, key extraction, or capture
-decryption.
+For the v0.12 Bluetooth pairing/security-state/key-evidence contracts, see
+[Bluetooth security evidence](docs/bluetooth-security-evidence.md) and
+[ADR-004](docs/adr-004-bluetooth-security-state-key-evidence.md).
+
+BLE-SEC-02 adds read-only inspection of one exact target already present in
+BlueZ's local cache/persistent store:
+
+```bash
+sudo .venv/bin/python bin/kamal-inspect-bluez-state \
+  --adapter 88:A2:9E:C6:E9:09 \
+  --target 00:1C:4D:45:DE:3F \
+  --engagement-id engagement:example \
+  --authorization-ref auth:example \
+  --json /tmp/bluez-security-state.json
+```
+
+This command does not scan, connect, pair, modify a bond, or emit raw Bluetooth
+key values. Pairing, key extraction/copying, RPA resolution, and capture
+decryption remain separately gated work.
 
 ### Releases
 

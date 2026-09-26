@@ -70,6 +70,7 @@ _OFFLINE_MODULES = (
     "active_contracts.py",
     "ble_correlation.py",
     "bluetooth_security.py",
+    "bluez_security_state.py",
     "evidence_contracts.py",
     "result_semantics.py",
 )

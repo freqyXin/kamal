@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Inspect persisted BlueZ security state without Bluetooth/RF activity."""
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kamal.bluez_security_state import (  # noqa: E402
+    DEFAULT_BLUEZ_ROOT,
+    BlueZSecurityStateError,
+    inspect_bluez_target,
+)
+from kamal.evidence_contracts import atomic_create_json  # noqa: E402
+
+
+def parser():
+    result = argparse.ArgumentParser(
+        description=(
+            "Inspect one exact target in BlueZ's existing cache/persistent store. "
+            "This command performs no Bluetooth RF or network operations."
+        )
+    )
+    result.add_argument("--adapter", required=True)
+    result.add_argument("--target", required=True)
+    result.add_argument("--engagement-id", required=True)
+    result.add_argument("--authorization-ref", required=True)
+    result.add_argument("--bluez-root", type=Path, default=DEFAULT_BLUEZ_ROOT)
+    result.add_argument("--observed-at-utc")
+    result.add_argument("--json", required=True, type=Path)
+    return result
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        report = inspect_bluez_target(
+            args.bluez_root,
+            adapter_address=args.adapter,
+            target_address=args.target,
+            engagement_id=args.engagement_id,
+            authorization_ref=args.authorization_ref,
+            observed_at_utc=args.observed_at_utc,
+        )
+        atomic_create_json(args.json, report)
+    except (OSError, BlueZSecurityStateError, ValueError, TypeError) as exc:
+        print(f"kamal-inspect-bluez-state: {exc}", file=sys.stderr)
+        return 1
+
+    persistent = report["persistent_security"]
+    print(f"BlueZ security-state report written to {args.json}")
+    print(
+        "Persistent record: "
+        + ("present" if persistent["persistent_record_present"] else "absent")
+    )
+    print(
+        "Recognized key material classes: "
+        + (
+            ", ".join(persistent["key_classes_with_material_present"])
+            if persistent["key_classes_with_material_present"]
+            else "none"
+        )
+    )
+    print("Raw Bluetooth key values were not emitted or persisted by this inspection.")
+    print("No RF or network operations were performed; BlueZ state was not modified.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

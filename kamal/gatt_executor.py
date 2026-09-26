@@ -396,6 +396,12 @@ async def execute_plan(
                     rec["value_bytes"] = len(data)
                 elif typ == "write_characteristic":
                     payload = bytes.fromhex(op["payload_hex"])
+                    # Payload provenance describes the bytes K'amal attempted to
+                    # submit, not whether the remote write succeeded.  Persist it
+                    # in the operation record even when the client/API later
+                    # raises a protocol or transport error.
+                    rec["payload_sha256"] = hashlib.sha256(payload).hexdigest()
+                    rec["payload_bytes"] = len(payload)
                     await asyncio.wait_for(
                         current_client.write_gatt_char(
                             selected,
@@ -404,8 +410,6 @@ async def execute_plan(
                         ),
                         timeout=op["timeout_seconds"],
                     )
-                    rec["payload_sha256"] = hashlib.sha256(payload).hexdigest()
-                    rec["payload_bytes"] = len(payload)
                 elif typ == "subscribe_notifications":
                     events = []
                     total = 0

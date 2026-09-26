@@ -223,6 +223,44 @@ class ExecTests(unittest.TestCase):
         self.assertEqual(result["application_effect"], "not_assessed")
         self.assertEqual(final["successful_operations"], 1)
 
+    def test_failed_write_preserves_attempted_payload_provenance(self):
+        class RejectedWriteClient(FakeClient):
+            async def write_gatt_char(self, x, payload, response=True):
+                self.writes.append((bytes(payload), response))
+                raise RuntimeError("write rejected")
+
+        p, a, sha = plan("write_characteristic")
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        client = RejectedWriteClient()
+
+        with self.assertRaises(ExecutionError):
+            asyncio.run(
+                execute_plan(
+                    p,
+                    a,
+                    authorization_sha256=sha,
+                    plan_sha256="2" * 64,
+                    output_dir=root / "out",
+                    safety_state_dir=root / "safety",
+                    backend=Backend(client),
+                )
+            )
+
+        self.assertEqual(client.writes, [(b"\x01\x02", True)])
+        result = json.loads((root / "out" / "operation-001.json").read_text())
+        self.assertFalse(result["transport_success"])
+        self.assertIn("write rejected", result["error"])
+        self.assertEqual(result["payload_bytes"], 2)
+        self.assertEqual(
+            result["payload_sha256"],
+            hashlib.sha256(b"\x01\x02").hexdigest(),
+        )
+        self.assertEqual(result["effect_semantics"]["protocol"]["state"], "failed")
+        self.assertFalse((root / "safety" / "active-run.json").exists())
+        self.assertFalse((root / "safety" / "unsafe-stop.json").exists())
+
     def test_notification_cleanup(self):
         self.run_case("subscribe_notifications")
 

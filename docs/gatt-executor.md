@@ -35,6 +35,12 @@ is recorded only as submitted because no response is expected. In both cases,
 application acknowledgment, state change, and security effect remain
 `not_assessed`.
 
+Write-operation evidence records the attempted payload length and SHA-256 before
+the client write call. These provenance fields therefore remain available when a
+remote ATT/GATT rejection or other client/API failure prevents a successful write
+outcome; their presence does not imply that the peripheral accepted or applied
+the payload.
+
 The legacy `transport_success` field remains as a compatibility mirror. The
 legacy `application_effect` field remains `not_assessed`; consumers should use
 `effect_semantics` for new work. See `docs/gatt-result-semantics.md` for the full

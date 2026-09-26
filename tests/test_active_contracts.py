@@ -57,6 +57,19 @@ def authorization():
     }
 
 
+def all_discovered_authorization():
+    auth = authorization()
+    auth["targets"][0]["address_type"] = "unknown"
+    auth["allowed_operations"] = ["enumerate_gatt_metadata"]
+    auth["constraints"]["allow_writes"] = False
+    auth["constraints"]["allow_write_without_response"] = False
+    auth["survey_scope"] = {
+        "mode": "all_discovered",
+        "scope_acknowledged": True,
+    }
+    return auth
+
+
 def request(*operations):
     return {
         "schema_version": "0.12.0",
@@ -226,6 +239,83 @@ class ActiveContractTests(unittest.TestCase):
                 auth,
                 timeout_seconds=5,
                 max_targets=1,
+                at_utc=NOW,
+            )
+
+    def test_all_discovered_metadata_scope_accepts_rotated_runtime_address(self):
+        auth = all_discovered_authorization()
+
+        normalized = validate_gatt_survey_authorization(
+            auth,
+            target_addresses=["11:22:33:44:55:66"],
+            timeout_seconds=5,
+            max_targets=1,
+            policy_mode="all_discovered",
+            scope_acknowledged=True,
+            at_utc=NOW,
+        )
+
+        self.assertEqual(
+            normalized["survey_scope"],
+            {
+                "mode": "all_discovered",
+                "scope_acknowledged": True,
+            },
+        )
+
+    def test_all_discovered_metadata_scope_requires_matching_policy(self):
+        auth = all_discovered_authorization()
+
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "requires acknowledged all-discovered survey policy",
+        ):
+            validate_gatt_survey_authorization(
+                auth,
+                target_addresses=["11:22:33:44:55:66"],
+                timeout_seconds=5,
+                max_targets=1,
+                policy_mode="allowlist",
+                scope_acknowledged=False,
+                at_utc=NOW,
+            )
+
+    def test_all_discovered_scope_cannot_authorize_typed_operations(self):
+        auth = all_discovered_authorization()
+        auth["allowed_operations"].append("read_characteristic")
+
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "only valid for enumerate_gatt_metadata",
+        ):
+            validate_authorization_scope(auth, at_utc=NOW)
+
+    def test_all_discovered_scope_requires_unknown_recorded_target_type(self):
+        auth = all_discovered_authorization()
+        auth["targets"][0]["address_type"] = "public"
+
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "requires address_type=unknown",
+        ):
+            validate_authorization_scope(auth, at_utc=NOW)
+
+    def test_exact_scope_still_rejects_rotated_runtime_address(self):
+        auth = authorization()
+        auth["targets"][0]["address_type"] = "unknown"
+        auth["allowed_operations"].append("enumerate_gatt_metadata")
+
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "outside authorization scope",
+        ):
+            validate_gatt_survey_authorization(
+                auth,
+                target_addresses=["11:22:33:44:55:66"],
+                timeout_seconds=5,
+                max_targets=1,
+                policy_mode="all_discovered",
+                scope_acknowledged=True,
                 at_utc=NOW,
             )
 

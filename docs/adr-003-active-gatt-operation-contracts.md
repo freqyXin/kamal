@@ -25,9 +25,18 @@ The typed `gatt_operation_request` taxonomy is:
 - `subscribe_notifications`
 
 Authorization scopes also recognize `enumerate_gatt_metadata` for the bounded
-read-only active survey path.  That class authorizes service/characteristic/
+read-only active survey path. That class authorizes service/characteristic/
 descriptor metadata enumeration only; it is not a typed attribute operation and
 cannot appear in a `gatt_operation_request` or executor plan.
+
+Metadata survey authorization normally remains exact-target. For explicitly
+controlled environments where every observable BLE device is authorized and
+address rotation makes a pre-discovery allowlist unstable, the authorization may
+carry an acknowledged `survey_scope.mode=all_discovered`. That dynamic scope is
+valid only for `enumerate_gatt_metadata`, cannot coexist with typed characteristic
+operations or write permissions, must match the CLI's acknowledged
+all-discovered policy, and remains bounded by the authorization's operation-count
+and timeout limits.
 
 All other operation classes fail closed. Writes require layered opt-in. A
 write-without-response (`command`) requires an additional explicit permission.

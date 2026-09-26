@@ -42,7 +42,7 @@ _UUID128_RE = re.compile(
 )
 _HEX_RE = re.compile(r"^[0-9A-Fa-f]*$")
 
-_AUTHORIZATION_FIELDS = frozenset(
+_AUTHORIZATION_REQUIRED_FIELDS = frozenset(
     {
         "schema_version",
         "record_type",
@@ -60,6 +60,8 @@ _AUTHORIZATION_FIELDS = frozenset(
         "approval",
     }
 )
+_AUTHORIZATION_FIELDS = _AUTHORIZATION_REQUIRED_FIELDS | frozenset({"survey_scope"})
+_SURVEY_SCOPE_FIELDS = frozenset({"mode", "scope_acknowledged"})
 _TARGET_FIELDS = frozenset({"protocol", "address", "address_type", "label"})
 _CONSTRAINT_FIELDS = frozenset(
     {
@@ -240,6 +242,38 @@ def _normalize_selector(value, field, operation_type):
     }
 
 
+def _normalize_survey_scope(value):
+    scope = _require_object(value, "authorization.survey_scope")
+    _reject_unknown_fields(scope, _SURVEY_SCOPE_FIELDS, "authorization.survey_scope")
+
+    missing = sorted(_SURVEY_SCOPE_FIELDS - set(scope))
+    if missing:
+        raise ContractValidationError(
+            "authorization.survey_scope missing required field(s): "
+            + ", ".join(missing)
+        )
+
+    mode = _require_string(scope["mode"], "authorization.survey_scope.mode")
+    if mode != "all_discovered":
+        raise ContractValidationError(
+            "authorization.survey_scope.mode must be all_discovered"
+        )
+
+    acknowledged = _require_bool(
+        scope["scope_acknowledged"],
+        "authorization.survey_scope.scope_acknowledged",
+    )
+    if not acknowledged:
+        raise ContractValidationError(
+            "authorization.survey_scope.scope_acknowledged must be true"
+        )
+
+    return {
+        "mode": "all_discovered",
+        "scope_acknowledged": True,
+    }
+
+
 def _normalize_constraints(value):
     constraints = _require_object(value, "authorization.constraints")
     _reject_unknown_fields(constraints, _CONSTRAINT_FIELDS, "authorization.constraints")
@@ -301,7 +335,7 @@ def validate_authorization_scope(authorization, *, at_utc=None):
     authorization = _require_object(authorization, "authorization")
     _reject_unknown_fields(authorization, _AUTHORIZATION_FIELDS, "authorization")
 
-    required = _AUTHORIZATION_FIELDS
+    required = _AUTHORIZATION_REQUIRED_FIELDS
     missing = sorted(required - set(authorization))
     if missing:
         raise ContractValidationError(
@@ -344,6 +378,10 @@ def validate_authorization_scope(authorization, *, at_utc=None):
         raise ContractValidationError("authorization is not yet valid")
     if now >= expires:
         raise ContractValidationError("authorization is expired")
+
+    survey_scope = None
+    if "survey_scope" in authorization:
+        survey_scope = _normalize_survey_scope(authorization["survey_scope"])
 
     targets = _require_list(authorization["targets"], "authorization.targets")
     if not targets:
@@ -390,6 +428,22 @@ def validate_authorization_scope(authorization, *, at_utc=None):
             "write operation class requires authorization.constraints.allow_writes=true"
         )
 
+    if survey_scope is not None:
+        if set(normalized_operations) != {GATT_METADATA_OPERATION}:
+            raise ContractValidationError(
+                "all-discovered survey scope is only valid for "
+                f"{GATT_METADATA_OPERATION}"
+            )
+        if constraints["allow_writes"] or constraints["allow_write_without_response"]:
+            raise ContractValidationError(
+                "all-discovered survey scope cannot authorize writes"
+            )
+        if any(target["address_type"] != "unknown" for target in normalized_targets):
+            raise ContractValidationError(
+                "all-discovered survey scope requires address_type=unknown "
+                "for recorded target selectors"
+            )
+
     approval = _require_object(authorization["approval"], "authorization.approval")
     _reject_unknown_fields(approval, _APPROVAL_FIELDS, "authorization.approval")
     missing_approval = sorted(_APPROVAL_FIELDS - set(approval))
@@ -407,7 +461,7 @@ def validate_authorization_scope(authorization, *, at_utc=None):
             "issued_at_utc <= approved_at_utc <= not_before_utc"
         )
 
-    return {
+    normalized_authorization = {
         "schema_version": ACTIVE_CONTRACT_VERSION,
         "record_type": "authorization_scope",
         "authorization_id": _require_string(
@@ -439,6 +493,9 @@ def validate_authorization_scope(authorization, *, at_utc=None):
             ),
         },
     }
+    if survey_scope is not None:
+        normalized_authorization["survey_scope"] = survey_scope
+    return normalized_authorization
 
 
 def validate_gatt_survey_authorization(
@@ -447,15 +504,18 @@ def validate_gatt_survey_authorization(
     target_addresses=None,
     timeout_seconds,
     max_targets=None,
+    policy_mode=None,
+    scope_acknowledged=False,
     at_utc=None,
 ):
     """Validate authorization for read-only GATT metadata enumeration.
 
-    The survey discovery path currently preserves BLE addresses but not a
-    trustworthy public/random address type.  Survey execution therefore only
-    accepts targets explicitly scoped with ``address_type=unknown``; this keeps
-    the type uncertainty visible instead of silently weakening exact target
-    matching.
+    Exact-target survey authorization uses BLE addresses scoped with
+    ``address_type=unknown`` because the survey discovery path does not preserve
+    a trustworthy public/random address type.  A metadata-only authorization may
+    instead carry ``survey_scope.mode=all_discovered``.  That dynamic scope is
+    valid only when the caller is itself using acknowledged all-discovered mode;
+    it never authorizes typed characteristic operations or writes.
     """
     import math
 
@@ -465,6 +525,20 @@ def validate_gatt_survey_authorization(
         raise ContractValidationError(
             f"operation class {GATT_METADATA_OPERATION} is not authorized"
         )
+
+    if policy_mode is not None:
+        if policy_mode not in {"allowlist", "all_discovered"}:
+            raise ContractValidationError("unsupported survey policy mode")
+        if not isinstance(scope_acknowledged, bool):
+            raise ContractValidationError("survey scope acknowledgment must be boolean")
+
+    survey_scope = normalized.get("survey_scope")
+    if survey_scope is not None:
+        if policy_mode != "all_discovered" or not scope_acknowledged:
+            raise ContractValidationError(
+                "all-discovered authorization requires acknowledged "
+                "all-discovered survey policy"
+            )
 
     if (
         isinstance(timeout_seconds, bool)
@@ -508,17 +582,18 @@ def validate_gatt_survey_authorization(
                 "survey target count exceeds authorization.constraints.max_operations"
             )
 
-        authorized_unknown = {
-            target["address"]
-            for target in normalized["targets"]
-            if target["address_type"] == "unknown"
-        }
-        missing = sorted(set(selected) - authorized_unknown)
-        if missing:
-            raise ContractValidationError(
-                "survey target is outside authorization scope or is not scoped "
-                f"with address_type=unknown: {missing[0]}"
-            )
+        if survey_scope is None:
+            authorized_unknown = {
+                target["address"]
+                for target in normalized["targets"]
+                if target["address_type"] == "unknown"
+            }
+            missing = sorted(set(selected) - authorized_unknown)
+            if missing:
+                raise ContractValidationError(
+                    "survey target is outside authorization scope or is not scoped "
+                    f"with address_type=unknown: {missing[0]}"
+                )
 
     return normalized
 

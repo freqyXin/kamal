@@ -362,12 +362,18 @@ async def async_main(argv=None):
                     target_addresses=preselected_targets,
                     timeout_seconds=args.timeout,
                     max_targets=args.max_devices,
+                    policy_mode=policy.mode,
+                    scope_acknowledged=policy.acknowledge_scope,
                 )
                 authorization_provenance = {
                     "authorization_id": normalized_authorization["authorization_id"],
                     "sha256": authorization_sha256,
                     "operation_class": GATT_METADATA_OPERATION,
                 }
+                if "survey_scope" in normalized_authorization:
+                    authorization_provenance["survey_scope"] = dict(
+                        normalized_authorization["survey_scope"]
+                    )
             except (
                 OSError,
                 ContractValidationError,
@@ -512,6 +518,8 @@ async def async_main(argv=None):
                     target_addresses=discovery["targets"],
                     timeout_seconds=args.timeout,
                     max_targets=args.max_devices,
+                    policy_mode=policy.mode,
+                    scope_acknowledged=policy.acknowledge_scope,
                 )
             except (ContractValidationError, TypeError, KeyError) as exc:
                 safety_error = None
@@ -651,6 +659,8 @@ async def async_main(argv=None):
                     target_addresses=[record["address"]],
                     timeout_seconds=args.timeout,
                     max_targets=1,
+                    policy_mode=policy.mode,
+                    scope_acknowledged=policy.acknowledge_scope,
                 )
                 return await inspect_discovered_device(
                     device=record["device"],

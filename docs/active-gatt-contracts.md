@@ -13,6 +13,9 @@ An authorization record is an explicit `authorization_scope` with:
 - engagement, owner, operator, and location;
 - issue, start, and expiration timestamps in UTC;
 - an exact BLE target allowlist using address plus address type;
+- optionally, a metadata-survey-only `survey_scope` for an explicitly acknowledged
+  `all_discovered` environment where BLE address rotation makes a precomputed
+  exact selector set unstable;
 - an explicit list of allowed operation classes;
 - hard bounds for operation count, payload size, timeout, and subscription
   duration;
@@ -114,18 +117,40 @@ run discovery-only.  `survey --execute` is different: it performs active GATT
 connections, so v0.12 requires both `--authorization` and
 `--safety-state-dir`.
 
-The authorization must include `enumerate_gatt_metadata`, must bound the survey
-timeout and target count, and must scope every executable survey address with
-`address_type: "unknown"`.  The current survey discovery record preserves the
-BLE address but not a trustworthy public/random address type; requiring
-`unknown` keeps that limitation explicit rather than silently treating an
-unverified address type as exact.  BLE addresses remain scope selectors, not
-stable identity.
+The authorization must include `enumerate_gatt_metadata` and must bound the
+survey timeout and target count. Exact-target survey authorization scopes every
+executable survey address with `address_type: "unknown"`. The current survey
+discovery record preserves the BLE address but not a trustworthy public/random
+address type; requiring `unknown` keeps that limitation explicit rather than
+silently treating an unverified address type as exact. BLE addresses remain
+scope selectors, not stable identity.
+
+For a controlled environment where the owner explicitly authorizes every BLE
+device observable during the survey, an authorization may additionally contain:
+
+```json
+"survey_scope": {
+  "mode": "all_discovered",
+  "scope_acknowledged": true
+}
+```
+
+This scope is deliberately narrow. It is valid only for
+`enumerate_gatt_metadata`, cannot be combined with typed characteristic
+operations or write permissions, and is accepted only when the CLI is itself
+running `--all-discovered --acknowledge-scope`. Runtime discoveries may then use
+rotated or newly observed BLE addresses without being misclassified as outside
+scope, while the authorization's operation-count and timeout limits remain
+authoritative. Exact-target authorizations retain the original fail-closed
+address matching behavior.
 
 Active survey execution validates authorization before RF, validates the
 discovered target queue again before the first connection, and revalidates the
-current target before every connection.  The exact authorization SHA-256 and ID
-are recorded in the survey manifest and each per-device `active_gatt` report.
+current target before every connection. For dynamic all-discovered scope those
+checks verify the acknowledged policy and bounds rather than exact runtime MAC
+membership. The exact authorization SHA-256 and ID, and the dynamic survey scope
+when present, are recorded in the survey manifest and each per-device
+`active_gatt` report.
 A `survey-execution-request.json` artifact is written before RF and its SHA-256
 binds the persistent safety lease for that survey run.
 

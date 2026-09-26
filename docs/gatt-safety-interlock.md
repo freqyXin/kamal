@@ -1,8 +1,9 @@
 # GATT execution safety interlock
 
 K'amal active GATT execution uses a persistent safety-state directory that is
-separate from per-run evidence.  Every `kamal-execute-gatt` invocation requires
-`--safety-state-dir`.  The directory provides two fail-closed controls:
+separate from per-run evidence.  Every `kamal-execute-gatt` invocation and every
+`kamal-gatt survey --execute` run requires `--safety-state-dir`.  The directory
+provides two fail-closed controls:
 
 - `active-run.json` is a single-executor lease created before RF work.  A second
   executor cannot start while that file exists.  If a process crashes or is
@@ -16,7 +17,11 @@ separate from per-run evidence.  Every `kamal-execute-gatt` invocation requires
 A normal run with confirmed cleanup removes the active-run lease durably.  An
 ordinary operation failure also clears the lease if the BLE session is confirmed
 disconnected; failed operations are still preserved as immutable evidence and
-remaining plan operations are not attempted.
+remaining plan operations are not attempted.  Active survey execution holds one
+lease across discovery and the sequential device queue.  It releases the lease
+only after every attempted device has confirmed-safe cleanup; an unsafe survey
+disconnect or unexpected abort with unconfirmed cleanup publishes the same
+recovery-required latch used by the bounded executor.
 
 ## Connection loss
 

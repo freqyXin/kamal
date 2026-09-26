@@ -109,7 +109,19 @@ def build_assessment(
 
         seen.add(source_id)
         source_records.append(source_record)
-        observations.append(build_observation_record(source))
+
+        authorization = source["report"].get("authorization")
+        authorization_ref = (
+            authorization.get("authorization_id")
+            if isinstance(authorization, dict)
+            else None
+        )
+        observations.append(
+            build_observation_record(
+                source,
+                authorization_ref=authorization_ref,
+            )
+        )
 
     source_records.sort(key=lambda item: item["source_id"])
     observations.sort(key=lambda item: item["observation_id"])

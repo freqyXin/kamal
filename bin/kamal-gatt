@@ -111,9 +111,14 @@ async def inspect_discovered_device(
     timeout,
     registries=None,
     provenance=None,
+    authorization_provenance=None,
 ):
     """Inspect an already-discovered device without scanning again."""
-    report = new_report(device.address, adapter)
+    report = new_report(
+        device.address,
+        adapter,
+        authorization=authorization_provenance,
+    )
 
     if provenance is not None:
         report["identifier_resolution"] = provenance
@@ -233,6 +238,16 @@ def parse_args(argv=None):
         help="Perform active GATT metadata enumeration after discovery",
     )
     survey.add_argument(
+        "--authorization",
+        type=Path,
+        help="v0.12 authorization_scope required for active survey execution",
+    )
+    survey.add_argument(
+        "--safety-state-dir",
+        type=Path,
+        help="persistent v0.12 GATT safety-state directory for active execution",
+    )
+    survey.add_argument(
         "--timeout",
         type=float,
         default=10.0,
@@ -248,11 +263,28 @@ async def async_main(argv=None):
 
 
     if args.command == "survey":
+        import hashlib
+
+        from kamal.active_contracts import (
+            ContractValidationError,
+            GATT_METADATA_OPERATION,
+            load_json_source,
+            validate_gatt_survey_authorization,
+        )
+        from kamal.evidence_contracts import atomic_create_json
+        from kamal.gatt_safety import (
+            SafetyInterlockError,
+            acquire_active_run,
+            latch_unsafe_stop,
+            mark_rf_started,
+            release_active_run,
+        )
         from kamal.gatt_survey import (
             SurveyTargetPolicy,
             SurveyAbortedError,
             atomic_json_write,
             build_execution_manifest,
+            cleanup_is_safe,
             discover_target_queue,
             discover_target_records,
             run_survey_records,
@@ -290,25 +322,61 @@ async def async_main(argv=None):
                     allowlist=frozenset(targets),
                 )
 
-            # Active execution must never reuse an existing output directory.
-            # Discovery-only retains its previous directory behavior.
             if args.execute:
-                if args.output_dir.exists():
+                if args.authorization is None:
                     raise ValueError(
-                        "Active survey requires a new output directory"
+                        "Active survey requires --authorization"
                     )
-                args.output_dir.mkdir(parents=True, exist_ok=False)
-            else:
-                args.output_dir.mkdir(parents=True, exist_ok=True)
+                if args.safety_state_dir is None:
+                    raise ValueError(
+                        "Active survey requires --safety-state-dir"
+                    )
+            elif args.authorization is not None or args.safety_state_dir is not None:
+                raise ValueError(
+                    "--authorization and --safety-state-dir are only valid with --execute"
+                )
 
         except (OSError, ValueError, TypeError) as exc:
             print(f"Survey policy error: {exc}", file=sys.stderr)
             return 8
 
+        authorization = None
+        authorization_sha256 = None
+        normalized_authorization = None
+        authorization_provenance = None
         registries = None
         provenance = None
 
         if args.execute:
+            try:
+                authorization, authorization_sha256, _ = load_json_source(
+                    args.authorization
+                )
+                preselected_targets = (
+                    sorted(policy.allowlist)
+                    if policy.allowlist is not None
+                    else None
+                )
+                normalized_authorization = validate_gatt_survey_authorization(
+                    authorization,
+                    target_addresses=preselected_targets,
+                    timeout_seconds=args.timeout,
+                    max_targets=args.max_devices,
+                )
+                authorization_provenance = {
+                    "authorization_id": normalized_authorization["authorization_id"],
+                    "sha256": authorization_sha256,
+                    "operation_class": GATT_METADATA_OPERATION,
+                }
+            except (
+                OSError,
+                ContractValidationError,
+                TypeError,
+                KeyError,
+            ) as exc:
+                print(f"Survey authorization error: {exc}", file=sys.stderr)
+                return 9
+
             try:
                 registries, provenance = load_gatt_registries()
             except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -318,6 +386,78 @@ async def async_main(argv=None):
                     file=sys.stderr,
                 )
                 return 7
+
+        try:
+            if args.execute:
+                if args.output_dir.exists():
+                    raise ValueError(
+                        "Active survey requires a new output directory"
+                    )
+                args.output_dir.mkdir(parents=True, exist_ok=False)
+            else:
+                args.output_dir.mkdir(parents=True, exist_ok=True)
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"Survey policy error: {exc}", file=sys.stderr)
+            return 8
+
+        manifest_path = args.output_dir / "survey-manifest.json"
+        lease_acquired = False
+        survey_run_id = None
+        survey_request_sha256 = None
+
+        if args.execute:
+            survey_request = {
+                "schema_version": "0.12.0",
+                "record_type": "gatt_survey_execution_request",
+                "authorization_id": normalized_authorization["authorization_id"],
+                "authorization_sha256": authorization_sha256,
+                "adapter": args.adapter,
+                "policy": {
+                    "mode": policy.mode,
+                    "scope_acknowledged": policy.acknowledge_scope,
+                    "allowlist": (
+                        sorted(policy.allowlist)
+                        if policy.allowlist is not None
+                        else None
+                    ),
+                },
+                "limits": {
+                    "discover_seconds": args.discover_seconds,
+                    "max_devices": args.max_devices,
+                    "timeout": args.timeout,
+                },
+                "output_dir": str(args.output_dir.resolve()),
+            }
+            survey_request_path = args.output_dir / "survey-execution-request.json"
+
+            try:
+                atomic_create_json(survey_request_path, survey_request)
+                survey_request_sha256 = hashlib.sha256(
+                    survey_request_path.read_bytes()
+                ).hexdigest()
+                survey_run_id = (
+                    f"survey:{normalized_authorization['authorization_id']}:"
+                    f"{survey_request_sha256[:16]}"
+                )
+                acquire_active_run(
+                    args.safety_state_dir,
+                    plan_id=survey_run_id,
+                    plan_sha256=survey_request_sha256,
+                    authorization_sha256=authorization_sha256,
+                    output_dir=args.output_dir,
+                    targets=normalized_authorization["targets"],
+                )
+                lease_acquired = True
+            except (OSError, SafetyInterlockError) as exc:
+                print(f"Survey safety error: {exc}", file=sys.stderr)
+                return 14
+
+        if args.execute:
+            try:
+                mark_rf_started(args.safety_state_dir)
+            except SafetyInterlockError as exc:
+                print(f"Survey safety error: {exc}", file=sys.stderr)
+                return 14
 
         try:
             if args.execute:
@@ -337,11 +477,96 @@ async def async_main(argv=None):
                 records = []
 
         except Exception as exc:
+            if args.execute and lease_acquired:
+                try:
+                    latch_unsafe_stop(
+                        args.safety_state_dir,
+                        plan_id=survey_run_id,
+                        reason=(
+                            "active GATT survey discovery failed after RF start: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                        cleanup={
+                            "phase": "discovery",
+                            "completed": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                        output_dir=args.output_dir,
+                    )
+                    lease_acquired = False
+                except SafetyInterlockError as safety_exc:
+                    print(
+                        f"Survey safety latch error: {safety_exc}",
+                        file=sys.stderr,
+                    )
             print(
                 f"Survey discovery error: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 10
+
+        if args.execute:
+            try:
+                normalized_authorization = validate_gatt_survey_authorization(
+                    authorization,
+                    target_addresses=discovery["targets"],
+                    timeout_seconds=args.timeout,
+                    max_targets=args.max_devices,
+                )
+            except (ContractValidationError, TypeError, KeyError) as exc:
+                safety_error = None
+                if lease_acquired:
+                    try:
+                        release_active_run(args.safety_state_dir)
+                        lease_acquired = False
+                    except SafetyInterlockError as release_exc:
+                        safety_error = release_exc
+
+                manifest = {
+                    "schema_version": "0.10.0",
+                    "type": "kamal_gatt_survey_manifest",
+                    "phase": "authorization_failed",
+                    "adapter": args.adapter,
+                    "policy": {
+                        "mode": policy.mode,
+                        "scope_acknowledged": policy.acknowledge_scope,
+                        "allowlist_count": (
+                            len(policy.allowlist)
+                            if policy.allowlist is not None
+                            else None
+                        ),
+                    },
+                    "limits": {
+                        "discover_seconds": args.discover_seconds,
+                        "max_devices": args.max_devices,
+                        "timeout": args.timeout,
+                    },
+                    "discovery": discovery,
+                    "authorization": authorization_provenance,
+                    "authorization_error": f"{type(exc).__name__}: {exc}",
+                    "execution_request": {
+                        "path": "survey-execution-request.json",
+                        "sha256": survey_request_sha256,
+                    },
+                    "safety_interlock": {
+                        "state": "clear" if safety_error is None else "uncertain",
+                        "state_dir": str(args.safety_state_dir.resolve()),
+                        "error": (
+                            None
+                            if safety_error is None
+                            else f"{type(safety_error).__name__}: {safety_error}"
+                        ),
+                    },
+                }
+                try:
+                    atomic_json_write(manifest_path, manifest)
+                except OSError as output_exc:
+                    print(f"Survey output error: {output_exc}", file=sys.stderr)
+                if safety_error is not None:
+                    print(f"Survey safety error: {safety_error}", file=sys.stderr)
+                    return 14
+                print(f"Survey authorization error: {exc}", file=sys.stderr)
+                return 9
 
         manifest = {
             "schema_version": "0.10.0",
@@ -365,13 +590,37 @@ async def async_main(argv=None):
             "discovery": discovery,
         }
 
-        manifest_path = args.output_dir / "survey-manifest.json"
+        if args.execute:
+            manifest["authorization"] = {
+                **authorization_provenance,
+                "engagement_id": normalized_authorization["engagement_id"],
+                "operator": normalized_authorization["operator"],
+                "owner": normalized_authorization["owner"],
+                "location": normalized_authorization["location"],
+                "not_before_utc": normalized_authorization["not_before_utc"],
+                "expires_at_utc": normalized_authorization["expires_at_utc"],
+            }
+            manifest["execution_request"] = {
+                "path": "survey-execution-request.json",
+                "sha256": survey_request_sha256,
+            }
+            manifest["safety_interlock"] = {
+                "state": "active",
+                "state_dir": str(args.safety_state_dir.resolve()),
+                "error": None,
+            }
 
-        def checkpoint(outcomes, abort_error=None, final=False):
+        def checkpoint(
+            outcomes,
+            abort_error=None,
+            final=False,
+            abort_cleanup_confirmed=False,
+        ):
             manifest["execution"] = build_execution_manifest(
                 len(records),
                 outcomes,
                 abort_error=abort_error,
+                abort_cleanup_confirmed=abort_cleanup_confirmed,
             )
 
             if abort_error is not None:
@@ -397,6 +646,12 @@ async def async_main(argv=None):
             checkpoint([])
 
             async def inspect_record(record):
+                validate_gatt_survey_authorization(
+                    authorization,
+                    target_addresses=[record["address"]],
+                    timeout_seconds=args.timeout,
+                    max_targets=1,
+                )
                 return await inspect_discovered_device(
                     device=record["device"],
                     adv=record["advertisement"],
@@ -404,6 +659,7 @@ async def async_main(argv=None):
                     timeout=args.timeout,
                     registries=registries,
                     provenance=provenance,
+                    authorization_provenance=authorization_provenance,
                 )
 
             try:
@@ -414,12 +670,120 @@ async def async_main(argv=None):
                     on_outcome=checkpoint,
                 )
             except SurveyAbortedError as exc:
-                checkpoint(exc.outcomes, abort_error=exc)
+                abort_cleanup_confirmed = isinstance(
+                    exc.cause, ContractValidationError
+                )
+                current_outcome = None
+                if exc.outcomes and exc.outcomes[-1]["address"] == exc.address:
+                    current_outcome = exc.outcomes[-1]
+                    abort_cleanup_confirmed = cleanup_is_safe(
+                        current_outcome["report"]
+                    )
+
+                try:
+                    if abort_cleanup_confirmed:
+                        release_active_run(args.safety_state_dir)
+                        lease_acquired = False
+                        manifest["safety_interlock"] = {
+                            "state": "clear",
+                            "state_dir": str(args.safety_state_dir.resolve()),
+                            "error": None,
+                        }
+                    else:
+                        cleanup = (
+                            current_outcome["report"].get("disconnect")
+                            if current_outcome is not None
+                            else {
+                                "phase": "survey_abort",
+                                "completed": False,
+                                "error": (
+                                    f"{type(exc.cause).__name__}: {exc.cause}"
+                                ),
+                            }
+                        )
+                        latch_unsafe_stop(
+                            args.safety_state_dir,
+                            plan_id=survey_run_id,
+                            reason=(
+                                "active GATT survey aborted with unconfirmed cleanup: "
+                                f"{type(exc.cause).__name__}: {exc.cause}"
+                            ),
+                            cleanup=cleanup,
+                            output_dir=args.output_dir,
+                            current_target={
+                                "address": exc.address,
+                                "address_type": "unknown",
+                            },
+                        )
+                        lease_acquired = False
+                        manifest["safety_interlock"] = {
+                            "state": "recovery_required",
+                            "state_dir": str(args.safety_state_dir.resolve()),
+                            "error": None,
+                        }
+                except SafetyInterlockError as safety_exc:
+                    manifest["safety_interlock"] = {
+                        "state": "uncertain",
+                        "state_dir": str(args.safety_state_dir.resolve()),
+                        "error": f"{type(safety_exc).__name__}: {safety_exc}",
+                    }
+
+                checkpoint(
+                    exc.outcomes,
+                    abort_error=exc,
+                    abort_cleanup_confirmed=abort_cleanup_confirmed,
+                )
                 print(
                     f"Survey aborted: {exc}",
                     file=sys.stderr,
                 )
                 return 13
+
+            unsafe_outcome = next(
+                (
+                    outcome
+                    for outcome in outcomes
+                    if not cleanup_is_safe(outcome["report"])
+                ),
+                None,
+            )
+
+            try:
+                if unsafe_outcome is not None:
+                    latch_unsafe_stop(
+                        args.safety_state_dir,
+                        plan_id=survey_run_id,
+                        reason="active GATT survey stopped after unconfirmed cleanup",
+                        cleanup=unsafe_outcome["report"].get("disconnect"),
+                        output_dir=args.output_dir,
+                        current_target={
+                            "address": unsafe_outcome["address"],
+                            "address_type": "unknown",
+                        },
+                    )
+                    lease_acquired = False
+                    manifest["safety_interlock"] = {
+                        "state": "recovery_required",
+                        "state_dir": str(args.safety_state_dir.resolve()),
+                        "error": None,
+                    }
+                else:
+                    release_active_run(args.safety_state_dir)
+                    lease_acquired = False
+                    manifest["safety_interlock"] = {
+                        "state": "clear",
+                        "state_dir": str(args.safety_state_dir.resolve()),
+                        "error": None,
+                    }
+            except SafetyInterlockError as exc:
+                manifest["safety_interlock"] = {
+                    "state": "uncertain",
+                    "state_dir": str(args.safety_state_dir.resolve()),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                checkpoint(outcomes, final=True)
+                print(f"Survey safety error: {exc}", file=sys.stderr)
+                return 14
 
             checkpoint(outcomes, final=True)
 

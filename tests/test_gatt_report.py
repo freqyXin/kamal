@@ -18,6 +18,25 @@ class GattReportTests(unittest.TestCase):
         self.assertFalse(report["disconnect"]["completed"])
         self.assertIsNone(report["disconnect"]["error"])
 
+    def test_authorization_provenance_is_optional_and_preserved(self):
+        authorization = {
+            "authorization_id": "auth:survey-1",
+            "sha256": "a" * 64,
+            "operation_class": "enumerate_gatt_metadata",
+        }
+        report = new_report(
+            "AA:BB:CC:DD:EE:FF",
+            "hci0",
+            authorization=authorization,
+        )
+
+        self.assertEqual(report["authorization"], authorization)
+        authorization["authorization_id"] = "mutated"
+        self.assertEqual(
+            report["authorization"]["authorization_id"],
+            "auth:survey-1",
+        )
+
     def test_operations_default_to_false(self):
         report = new_report("AA:BB:CC:DD:EE:FF", "hci0")
 

@@ -152,6 +152,32 @@ def validate_active(report):
         "active.operations",
     )
 
+    if "authorization" in report:
+        authorization = require_field(report, "authorization", dict, path)
+        authorization_id = require_field(
+            authorization, "authorization_id", str, "active.authorization"
+        )
+        sha256 = require_field(
+            authorization, "sha256", str, "active.authorization"
+        )
+        operation_class = require_field(
+            authorization, "operation_class", str, "active.authorization"
+        )
+        if not authorization_id.strip():
+            raise ValueError("active.authorization.authorization_id must not be empty")
+        if len(sha256) != 64:
+            raise ValueError("active.authorization.sha256 must be a SHA-256 digest")
+        try:
+            int(sha256, 16)
+        except ValueError as exc:
+            raise ValueError(
+                "active.authorization.sha256 must be a SHA-256 digest"
+            ) from exc
+        if operation_class != "enumerate_gatt_metadata":
+            raise ValueError(
+                "active.authorization.operation_class must be enumerate_gatt_metadata"
+            )
+
     for index, service in enumerate(services):
         service_path = f"active.gatt.services[{index}]"
         require_object(service, service_path)

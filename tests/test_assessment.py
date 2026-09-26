@@ -83,6 +83,25 @@ class AssessmentTests(unittest.TestCase):
             {"0.6.0", "0.7.0"},
         )
 
+    def test_active_report_authorization_is_carried_to_observation(self):
+        report = active_report()
+        report["authorization"] = {
+            "authorization_id": "auth:survey-1",
+            "sha256": "a" * 64,
+            "operation_class": "enumerate_gatt_metadata",
+        }
+        source = load_source(self.write_report("active-auth.json", report))
+
+        assessment = build_assessment(
+            [source],
+            assessment_id="authorized-active",
+        )
+
+        self.assertEqual(
+            assessment["observations"][0]["authorization_ref"],
+            "auth:survey-1",
+        )
+
     def test_preserves_explicit_catalog_provenance(self):
         source = load_source(self.write_report("active.json", active_report()))
         digest = "b" * 64

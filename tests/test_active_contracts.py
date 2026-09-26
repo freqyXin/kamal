@@ -7,6 +7,7 @@ from kamal.active_contracts import (
     ContractValidationError,
     build_gatt_operation_plan,
     validate_authorization_scope,
+    validate_gatt_survey_authorization,
 )
 
 
@@ -138,6 +139,94 @@ class ActiveContractTests(unittest.TestCase):
                 authorization_sha256=DIGEST,
                 request_sha256=REQUEST_DIGEST,
                 created_at_utc=NOW,
+            )
+
+
+    def test_metadata_enumeration_can_be_authorized_without_becoming_plan_operation(self):
+        auth = authorization()
+        auth["allowed_operations"].append("enumerate_gatt_metadata")
+        auth["targets"][0]["address_type"] = "unknown"
+
+        normalized = validate_gatt_survey_authorization(
+            auth,
+            target_addresses=["aa:bb:cc:dd:ee:ff"],
+            timeout_seconds=5,
+            max_targets=1,
+            at_utc=NOW,
+        )
+        self.assertIn(
+            "enumerate_gatt_metadata",
+            normalized["allowed_operations"],
+        )
+
+        operation = read_characteristic()
+        operation["operation_type"] = "enumerate_gatt_metadata"
+        operation["target"]["address_type"] = "unknown"
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "Unsupported active operation class",
+        ):
+            build_gatt_operation_plan(
+                auth,
+                request(operation),
+                authorization_sha256=DIGEST,
+                request_sha256=REQUEST_DIGEST,
+                created_at_utc=NOW,
+            )
+
+    def test_metadata_survey_requires_explicit_operation_permission(self):
+        auth = authorization()
+        auth["targets"][0]["address_type"] = "unknown"
+
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "enumerate_gatt_metadata is not authorized",
+        ):
+            validate_gatt_survey_authorization(
+                auth,
+                target_addresses=["AA:BB:CC:DD:EE:FF"],
+                timeout_seconds=5,
+                max_targets=1,
+                at_utc=NOW,
+            )
+
+    def test_metadata_survey_requires_unknown_address_type(self):
+        auth = authorization()
+        auth["allowed_operations"].append("enumerate_gatt_metadata")
+
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "address_type=unknown",
+        ):
+            validate_gatt_survey_authorization(
+                auth,
+                target_addresses=["AA:BB:CC:DD:EE:FF"],
+                timeout_seconds=5,
+                max_targets=1,
+                at_utc=NOW,
+            )
+
+    def test_metadata_survey_enforces_target_count_and_timeout(self):
+        auth = authorization()
+        auth["allowed_operations"].append("enumerate_gatt_metadata")
+        auth["targets"][0]["address_type"] = "unknown"
+        auth["constraints"]["max_operations"] = 1
+        auth["constraints"]["max_timeout_seconds"] = 4
+
+        with self.assertRaisesRegex(ContractValidationError, "target limit"):
+            validate_gatt_survey_authorization(
+                auth,
+                timeout_seconds=4,
+                max_targets=2,
+                at_utc=NOW,
+            )
+
+        with self.assertRaisesRegex(ContractValidationError, "timeout"):
+            validate_gatt_survey_authorization(
+                auth,
+                timeout_seconds=5,
+                max_targets=1,
+                at_utc=NOW,
             )
 
     def test_write_requires_layered_opt_in(self):

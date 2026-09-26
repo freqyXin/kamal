@@ -17,12 +17,17 @@ K'amal will use an explicit `authorization_scope` plus a separate typed
 `gatt_operation_plan` carrying the SHA-256 of the exact authorization artifact.
 The planner performs no RF activity.
 
-The initial operation taxonomy is:
+The typed `gatt_operation_request` taxonomy is:
 
 - `read_characteristic`
 - `read_descriptor`
 - `write_characteristic`
 - `subscribe_notifications`
+
+Authorization scopes also recognize `enumerate_gatt_metadata` for the bounded
+read-only active survey path.  That class authorizes service/characteristic/
+descriptor metadata enumeration only; it is not a typed attribute operation and
+cannot appear in a `gatt_operation_request` or executor plan.
 
 All other operation classes fail closed. Writes require layered opt-in. A
 write-without-response (`command`) requires an additional explicit permission.

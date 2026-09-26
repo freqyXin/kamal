@@ -337,7 +337,13 @@ def summarize_survey_execution(target_count, outcomes):
     }
 
 
-def build_execution_manifest(target_count, outcomes, abort_error=None):
+def build_execution_manifest(
+    target_count,
+    outcomes,
+    abort_error=None,
+    *,
+    abort_cleanup_confirmed=False,
+):
     """Build serializable execution state for the survey manifest."""
     summary = summarize_survey_execution(target_count, outcomes)
 
@@ -360,7 +366,7 @@ def build_execution_manifest(target_count, outcomes, abort_error=None):
         execution["abort"] = {
             "address": abort_error.address,
             "error": f"{type(abort_error.cause).__name__}: {abort_error.cause}",
-            "cleanup_confirmed": False,
+            "cleanup_confirmed": bool(abort_cleanup_confirmed),
         }
 
     return execution

@@ -63,5 +63,22 @@ class SurveyManifestTests(unittest.TestCase):
             execution["abort"]["error"],
         )
 
+    def test_aborted_manifest_can_record_confirmed_cleanup(self):
+        error = SurveyAbortedError(
+            "AA:00",
+            [],
+            RuntimeError("pre-connection authorization expired"),
+        )
+
+        execution = build_execution_manifest(
+            1,
+            [],
+            abort_error=error,
+            abort_cleanup_confirmed=True,
+        )
+
+        self.assertTrue(execution["abort"]["cleanup_confirmed"])
+
+
 if __name__ == "__main__":
     unittest.main()

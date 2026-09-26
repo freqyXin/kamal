@@ -23,12 +23,16 @@ The BLE address is a **scope selector**, not a stable device identity. Address
 rotation or reuse can invalidate the practical meaning of a scope record, so an
 operator must confirm the target at execution time in the later executor layer.
 
-The current operation taxonomy is deliberately small:
+The typed operation-plan taxonomy is deliberately small:
 
 - `read_characteristic`
 - `read_descriptor`
 - `write_characteristic`
 - `subscribe_notifications`
+
+Authorization scopes additionally support `enumerate_gatt_metadata` for the
+read-only active survey path.  It authorizes metadata enumeration only and is
+rejected if supplied as a typed `gatt_operation_request`.
 
 Unknown operation classes, including fuzzing, replay, pairing, injection, or
 arbitrary raw ATT operations, fail closed. Writes require both the explicit
@@ -102,3 +106,43 @@ Assessment rules still cannot initiate RF operations. A finding or heuristic
 may eventually propose a reviewed operation request, but it cannot create
 permission. Authorization and the bounded operation request must independently
 validate before a later executor is allowed to act.
+
+## Authorization-gated active metadata survey
+
+`kamal-gatt survey` remains usable without an authorization artifact when it is
+run discovery-only.  `survey --execute` is different: it performs active GATT
+connections, so v0.12 requires both `--authorization` and
+`--safety-state-dir`.
+
+The authorization must include `enumerate_gatt_metadata`, must bound the survey
+timeout and target count, and must scope every executable survey address with
+`address_type: "unknown"`.  The current survey discovery record preserves the
+BLE address but not a trustworthy public/random address type; requiring
+`unknown` keeps that limitation explicit rather than silently treating an
+unverified address type as exact.  BLE addresses remain scope selectors, not
+stable identity.
+
+Active survey execution validates authorization before RF, validates the
+discovered target queue again before the first connection, and revalidates the
+current target before every connection.  The exact authorization SHA-256 and ID
+are recorded in the survey manifest and each per-device `active_gatt` report.
+A `survey-execution-request.json` artifact is written before RF and its SHA-256
+binds the persistent safety lease for that survey run.
+
+Example shape:
+
+```text
+.venv/bin/python bin/kamal-gatt survey \
+  --allowlist authorized-targets.json \
+  --execute \
+  --authorization authorization.json \
+  --safety-state-dir ~/.local/state/kamal/gatt-safety-v012 \
+  --discover-seconds 30 \
+  --max-devices 45 \
+  --timeout 5 \
+  --output-dir /path/to/new/evidence-dir
+```
+
+The active survey never reads characteristic values, writes attributes,
+subscribes to notifications, or requests pairing.  It serializes only GATT
+service, characteristic, descriptor, and characteristic-property metadata.

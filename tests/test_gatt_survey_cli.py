@@ -1,12 +1,14 @@
 import asyncio
 import importlib.util
 from importlib.machinery import SourceFileLoader
+import hashlib
 import io
 import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
@@ -34,6 +36,71 @@ class GattSurveyCLITests(unittest.TestCase):
             status = asyncio.run(self.cli.async_main(args))
 
         return status, stdout.getvalue(), stderr.getvalue()
+
+    def write_survey_authorization(self, root, addresses):
+        path = Path(root) / "authorization.json"
+        payload = {
+            "schema_version": "0.12.0",
+            "record_type": "authorization_scope",
+            "authorization_id": "auth:survey-test",
+            "engagement_id": "engagement:survey-test",
+            "owner": "Test Owner",
+            "operator": "Tester",
+            "location": "authorized lab",
+            "issued_at_utc": "2020-01-01T00:00:00Z",
+            "not_before_utc": "2020-01-01T00:00:00Z",
+            "expires_at_utc": "2099-01-01T00:00:00Z",
+            "targets": [
+                {
+                    "protocol": "ble",
+                    "address": address,
+                    "address_type": "unknown",
+                    "label": "authorized survey target",
+                }
+                for address in addresses
+            ],
+            "allowed_operations": ["enumerate_gatt_metadata"],
+            "constraints": {
+                "max_operations": len(addresses),
+                "max_payload_bytes": 0,
+                "max_timeout_seconds": 5,
+                "max_subscription_seconds": 1,
+                "allow_writes": False,
+                "allow_write_without_response": False,
+            },
+            "approval": {
+                "approver": "Test Owner",
+                "approved_at_utc": "2020-01-01T00:00:00Z",
+                "basis": "synthetic authorized survey",
+            },
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def successful_report(self, address, authorization_provenance):
+        report = self.cli.new_report(
+            address,
+            "hci0",
+            authorization=authorization_provenance,
+        )
+        report["connection"].update({
+            "attempted": True,
+            "connected": True,
+            "error": None,
+            "client_created": True,
+        })
+        report["gatt"].update({
+            "enumeration_attempted": True,
+            "enumerated": True,
+            "error": None,
+            "services": [],
+        })
+        report["disconnect"].update({
+            "attempted": True,
+            "completed": True,
+            "error": None,
+        })
+        return report
 
     def test_all_discovered_requires_acknowledgment(self):
         status, _, stderr = self.run_async_main([
@@ -252,6 +319,268 @@ class GattSurveyCLITests(unittest.TestCase):
             ])
 
         self.assertEqual(status, 8)
+
+    def test_active_survey_requires_authorization_and_safety_state(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            tempdir = Path(tempdir)
+            allowlist = tempdir / "allowlist.json"
+            allowlist.write_text(
+                json.dumps(["AA:BB:CC:DD:EE:FF"]),
+                encoding="utf-8",
+            )
+
+            status, _, stderr = self.run_async_main([
+                "survey",
+                "--allowlist",
+                str(allowlist),
+                "--execute",
+                "--output-dir",
+                str(tempdir / "results"),
+            ])
+
+        self.assertEqual(status, 8)
+        self.assertIn("--authorization", stderr)
+
+    def test_active_survey_binds_authorization_and_releases_safety_state(self):
+        address = "AA:BB:CC:DD:EE:FF"
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            tempdir = Path(tempdir)
+            allowlist = tempdir / "allowlist.json"
+            allowlist.write_text(json.dumps([address]), encoding="utf-8")
+            authorization = self.write_survey_authorization(tempdir, [address])
+            output_dir = tempdir / "results"
+            safety_dir = tempdir / "safety"
+
+            device = SimpleNamespace(address=address)
+            advertisement = SimpleNamespace()
+            fake_discovery = AsyncMock(return_value=(
+                {
+                    "discovered_count": 1,
+                    "permitted_count": 1,
+                    "target_count": 1,
+                    "omitted_by_cap": 0,
+                    "targets": [address],
+                },
+                [{
+                    "address": address,
+                    "device": device,
+                    "advertisement": advertisement,
+                }],
+            ))
+
+            async def inspect(**kwargs):
+                return (
+                    self.successful_report(
+                        kwargs["device"].address,
+                        kwargs["authorization_provenance"],
+                    ),
+                    0,
+                )
+
+            with patch(
+                "kamal.gatt_survey.discover_target_records",
+                fake_discovery,
+            ), patch.object(
+                self.cli,
+                "load_gatt_registries",
+                return_value=({}, {}),
+            ), patch.object(
+                self.cli,
+                "inspect_discovered_device",
+                new=AsyncMock(side_effect=inspect),
+            ):
+                status, stdout, stderr = self.run_async_main([
+                    "survey",
+                    "--allowlist",
+                    str(allowlist),
+                    "--execute",
+                    "--authorization",
+                    str(authorization),
+                    "--safety-state-dir",
+                    str(safety_dir),
+                    "--discover-seconds",
+                    "1",
+                    "--max-devices",
+                    "1",
+                    "--timeout",
+                    "5",
+                    "--output-dir",
+                    str(output_dir),
+                ])
+
+            self.assertEqual(status, 0)
+            self.assertEqual(stderr, "")
+            manifest = json.loads(
+                (output_dir / "survey-manifest.json").read_text()
+            )
+            digest = hashlib.sha256(authorization.read_bytes()).hexdigest()
+            self.assertEqual(manifest["phase"], "completed")
+            self.assertEqual(
+                manifest["authorization"]["authorization_id"],
+                "auth:survey-test",
+            )
+            self.assertEqual(manifest["authorization"]["sha256"], digest)
+            self.assertEqual(
+                manifest["authorization"]["operation_class"],
+                "enumerate_gatt_metadata",
+            )
+            self.assertEqual(manifest["safety_interlock"]["state"], "clear")
+            self.assertTrue((output_dir / "survey-execution-request.json").exists())
+            report = json.loads((output_dir / "device-001.json").read_text())
+            self.assertEqual(report["authorization"]["sha256"], digest)
+            self.assertFalse((safety_dir / "active-run.json").exists())
+            self.assertFalse((safety_dir / "unsafe-stop.json").exists())
+            self.assertEqual(json.loads(stdout), manifest)
+
+    def test_active_survey_rejects_discovered_target_outside_scope_before_connection(self):
+        authorized = "AA:BB:CC:DD:EE:FF"
+        discovered = "11:22:33:44:55:66"
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            tempdir = Path(tempdir)
+            authorization = self.write_survey_authorization(
+                tempdir, [authorized]
+            )
+            output_dir = tempdir / "results"
+            safety_dir = tempdir / "safety"
+            fake_discovery = AsyncMock(return_value=(
+                {
+                    "discovered_count": 1,
+                    "permitted_count": 1,
+                    "target_count": 1,
+                    "omitted_by_cap": 0,
+                    "targets": [discovered],
+                },
+                [{
+                    "address": discovered,
+                    "device": SimpleNamespace(address=discovered),
+                    "advertisement": SimpleNamespace(),
+                }],
+            ))
+            inspect = AsyncMock()
+
+            with patch(
+                "kamal.gatt_survey.discover_target_records",
+                fake_discovery,
+            ), patch.object(
+                self.cli,
+                "load_gatt_registries",
+                return_value=({}, {}),
+            ), patch.object(
+                self.cli,
+                "inspect_discovered_device",
+                new=inspect,
+            ):
+                status, _, stderr = self.run_async_main([
+                    "survey",
+                    "--all-discovered",
+                    "--acknowledge-scope",
+                    "--execute",
+                    "--authorization",
+                    str(authorization),
+                    "--safety-state-dir",
+                    str(safety_dir),
+                    "--discover-seconds",
+                    "1",
+                    "--max-devices",
+                    "1",
+                    "--timeout",
+                    "5",
+                    "--output-dir",
+                    str(output_dir),
+                ])
+
+            self.assertEqual(status, 9)
+            self.assertIn("outside authorization scope", stderr)
+            inspect.assert_not_awaited()
+            manifest = json.loads(
+                (output_dir / "survey-manifest.json").read_text()
+            )
+            self.assertEqual(manifest["phase"], "authorization_failed")
+            self.assertEqual(manifest["safety_interlock"]["state"], "clear")
+            self.assertFalse((safety_dir / "active-run.json").exists())
+            self.assertFalse((safety_dir / "unsafe-stop.json").exists())
+
+    def test_active_survey_unsafe_disconnect_latches_recovery(self):
+        address = "AA:BB:CC:DD:EE:FF"
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            tempdir = Path(tempdir)
+            allowlist = tempdir / "allowlist.json"
+            allowlist.write_text(json.dumps([address]), encoding="utf-8")
+            authorization = self.write_survey_authorization(tempdir, [address])
+            output_dir = tempdir / "results"
+            safety_dir = tempdir / "safety"
+            fake_discovery = AsyncMock(return_value=(
+                {
+                    "discovered_count": 1,
+                    "permitted_count": 1,
+                    "target_count": 1,
+                    "omitted_by_cap": 0,
+                    "targets": [address],
+                },
+                [{
+                    "address": address,
+                    "device": SimpleNamespace(address=address),
+                    "advertisement": SimpleNamespace(),
+                }],
+            ))
+
+            async def inspect(**kwargs):
+                report = self.successful_report(
+                    kwargs["device"].address,
+                    kwargs["authorization_provenance"],
+                )
+                report["disconnect"].update({
+                    "attempted": True,
+                    "completed": False,
+                    "error": "TimeoutError: disconnect uncertain",
+                })
+                return report, 6
+
+            with patch(
+                "kamal.gatt_survey.discover_target_records",
+                fake_discovery,
+            ), patch.object(
+                self.cli,
+                "load_gatt_registries",
+                return_value=({}, {}),
+            ), patch.object(
+                self.cli,
+                "inspect_discovered_device",
+                new=AsyncMock(side_effect=inspect),
+            ):
+                status, _, _ = self.run_async_main([
+                    "survey",
+                    "--allowlist",
+                    str(allowlist),
+                    "--execute",
+                    "--authorization",
+                    str(authorization),
+                    "--safety-state-dir",
+                    str(safety_dir),
+                    "--discover-seconds",
+                    "1",
+                    "--max-devices",
+                    "1",
+                    "--timeout",
+                    "5",
+                    "--output-dir",
+                    str(output_dir),
+                ])
+
+            self.assertEqual(status, 12)
+            manifest = json.loads(
+                (output_dir / "survey-manifest.json").read_text()
+            )
+            self.assertEqual(manifest["phase"], "stopped_unsafe")
+            self.assertEqual(
+                manifest["safety_interlock"]["state"],
+                "recovery_required",
+            )
+            self.assertFalse((safety_dir / "active-run.json").exists())
+            self.assertTrue((safety_dir / "unsafe-stop.json").exists())
 
     def test_inspect_parser_remains_compatible(self):
         args = self.cli.parse_args([

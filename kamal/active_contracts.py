@@ -24,6 +24,8 @@ SUPPORTED_OPERATIONS = frozenset(
         "subscribe_notifications",
     }
 )
+GATT_METADATA_OPERATION = "enumerate_gatt_metadata"
+AUTHORIZED_OPERATIONS = SUPPORTED_OPERATIONS | frozenset({GATT_METADATA_OPERATION})
 WRITE_OPERATIONS = frozenset({"write_characteristic"})
 
 HARD_MAX_OPERATIONS = 64
@@ -371,7 +373,7 @@ def validate_authorization_scope(authorization, *, at_utc=None):
         operation = _require_string(
             operation, f"authorization.allowed_operations[{index}]"
         )
-        if operation not in SUPPORTED_OPERATIONS:
+        if operation not in AUTHORIZED_OPERATIONS:
             raise ContractValidationError(
                 f"Unsupported active operation class: {operation}"
             )
@@ -437,6 +439,88 @@ def validate_authorization_scope(authorization, *, at_utc=None):
             ),
         },
     }
+
+
+def validate_gatt_survey_authorization(
+    authorization,
+    *,
+    target_addresses=None,
+    timeout_seconds,
+    max_targets=None,
+    at_utc=None,
+):
+    """Validate authorization for read-only GATT metadata enumeration.
+
+    The survey discovery path currently preserves BLE addresses but not a
+    trustworthy public/random address type.  Survey execution therefore only
+    accepts targets explicitly scoped with ``address_type=unknown``; this keeps
+    the type uncertainty visible instead of silently weakening exact target
+    matching.
+    """
+    import math
+
+    normalized = validate_authorization_scope(authorization, at_utc=at_utc)
+
+    if GATT_METADATA_OPERATION not in normalized["allowed_operations"]:
+        raise ContractValidationError(
+            f"operation class {GATT_METADATA_OPERATION} is not authorized"
+        )
+
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or not 1 <= timeout_seconds <= normalized["constraints"]["max_timeout_seconds"]
+    ):
+        raise ContractValidationError(
+            "survey timeout exceeds authorization.constraints.max_timeout_seconds"
+        )
+
+    if max_targets is not None:
+        if (
+            isinstance(max_targets, bool)
+            or not isinstance(max_targets, int)
+            or max_targets < 1
+        ):
+            raise ContractValidationError("survey max_targets must be a positive integer")
+        if max_targets > normalized["constraints"]["max_operations"]:
+            raise ContractValidationError(
+                "survey target limit exceeds authorization.constraints.max_operations"
+            )
+
+    if target_addresses is not None:
+        if not isinstance(target_addresses, (list, tuple, set, frozenset)):
+            raise ContractValidationError("survey target_addresses must be a collection")
+
+        selected = []
+        seen = set()
+        for index, address in enumerate(target_addresses):
+            normalized_address = _normalize_address(
+                address, f"survey.target_addresses[{index}]"
+            )
+            if normalized_address in seen:
+                raise ContractValidationError("survey contains duplicate target address")
+            seen.add(normalized_address)
+            selected.append(normalized_address)
+
+        if len(selected) > normalized["constraints"]["max_operations"]:
+            raise ContractValidationError(
+                "survey target count exceeds authorization.constraints.max_operations"
+            )
+
+        authorized_unknown = {
+            target["address"]
+            for target in normalized["targets"]
+            if target["address_type"] == "unknown"
+        }
+        missing = sorted(set(selected) - authorized_unknown)
+        if missing:
+            raise ContractValidationError(
+                "survey target is outside authorization scope or is not scoped "
+                f"with address_type=unknown: {missing[0]}"
+            )
+
+    return normalized
 
 
 def _normalize_operation(operation, index, authorization):

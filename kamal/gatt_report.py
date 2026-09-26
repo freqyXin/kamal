@@ -12,8 +12,8 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def new_report(target, adapter):
-    return {
+def new_report(target, adapter, authorization=None):
+    report = {
         "schema_version": SCHEMA_VERSION,
         "evidence_type": "active_gatt",
         "timestamp_utc": utc_now(),
@@ -42,6 +42,9 @@ def new_report(target, adapter):
             "pairing_requested": False,
         },
     }
+    if authorization is not None:
+        report["authorization"] = dict(authorization)
+    return report
 
 
 def serialize_services(services, registries=None):

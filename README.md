@@ -179,6 +179,12 @@ See [Bluetooth identifier registry setup](data/bluetooth/README.md).
 For capture hardware setup, see
 [BLE sniffer documentation](docs/ble-sniffer.md).
 
+For the v0.12 non-executing Bluetooth pairing/security-state/key-evidence
+contracts, see [Bluetooth security evidence](docs/bluetooth-security-evidence.md)
+and [ADR-004](docs/adr-004-bluetooth-security-state-key-evidence.md). These
+contracts do not yet enable pairing, bond changes, key extraction, or capture
+decryption.
+
 ### Releases
 
 See [v0.9.0 release notes](docs/releases/v0.9.0.md), [v0.8.0 release notes](docs/releases/v0.8.0.md) and [v0.7.0 release notes](docs/releases/v0.7.0.md).

@@ -69,6 +69,7 @@ _OFFLINE_MODULES = (
     "device_intelligence.py",
     "active_contracts.py",
     "ble_correlation.py",
+    "bluetooth_security.py",
     "evidence_contracts.py",
     "result_semantics.py",
 )

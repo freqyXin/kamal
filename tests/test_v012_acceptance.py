@@ -101,6 +101,7 @@ class V012AcceptanceTests(unittest.TestCase):
         self.assertTrue(report["checks"]["offline_module_boundaries"])
         self.assertIn("ble_intelligence.py", report["offline_modules_checked"])
         self.assertIn("device_intelligence.py", report["offline_modules_checked"])
+        self.assertIn("bluetooth_security.py", report["offline_modules_checked"])
 
 
 if __name__ == "__main__":

@@ -124,17 +124,60 @@ environment.
 The dependency manifest currently covers BLE GATT functionality, not
 every K'amal hardware integration.
 
+## Documentation map
+
+Start with the [BLE operator guide](docs/ble-operator-guide.md) for the current
+usable BLE workflows and exact invocation model.
+
+Project-level references:
+
+* [Master development roadmap](docs/master-development-roadmap.md) — verified
+  progress, release gates, current data-channel work, and future product goals.
+* [BLE sniffer documentation](docs/ble-sniffer.md) — Nordic hardware,
+  provisioning, single-radio capture, and the fixed CH37/38/39 observation plane.
+* [Bluetooth security evidence](docs/bluetooth-security-evidence.md) — current
+  security-state/key-evidence contracts.
+* [Pairing executor](docs/pairing-executor.md) — explicit pairing/bond workflow.
+* [v0.12 acceptance](docs/v0.12-acceptance.md) — synthetic integration gate.
+
 ## BLE Security Tooling
 
-K'amal includes passive BLE inventory and active GATT enumeration
-capabilities alongside its cellular field-node infrastructure.
+K'amal includes passive BLE capture/inventory, active GATT assessment,
+security-state/key-evidence tooling, explicit pairing/bond execution, and
+offline correlation/assessment capabilities alongside its cellular field-node
+infrastructure.
+
+For an operator-oriented command map, use
+[docs/ble-operator-guide.md](docs/ble-operator-guide.md).
+
+### Nordic capture
+
+Single-receiver capture is exposed through:
+
+```bash
+bin/kamal-capture ble --duration 60 --output /tmp/kamal-ble.pcap
+```
+
+The validated three-receiver primary-advertising plane is exposed separately:
+
+```bash
+bin/kamal-capture ble-adv3 \
+  --address AA:BB:CC:DD:EE:FF \
+  --duration 60 \
+  --output-dir /tmp/kamal-adv3
+```
+
+The three-channel mode preserves CH37/CH38/CH39 PCAPs separately and writes a
+manifest with radio/channel/provenance checks. It does not imply arbitrary BLE
+data-channel support.
+
 
 ### Passive inventory
 
 Analyze an existing BLE PCAP:
 
 ```bash
-bin/kamal-scan ble --input capture.pcap --json inventory.json
+.venv/bin/python bin/kamal-scan ble --input capture.pcap --json inventory.json
 ```
 
 The scanner uses tshark to process captured advertising traffic.
@@ -149,7 +192,7 @@ establish that GATT services were enumerated.
 Inspect an explicitly selected, authorized BLE target:
 
 ```bash
-bin/kamal-gatt inspect AA:BB:CC:DD:EE:FF \
+.venv/bin/python bin/kamal-gatt inspect AA:BB:CC:DD:EE:FF \
   --adapter hci0 \
   --timeout 10 \
   --json gatt.json
@@ -299,6 +342,18 @@ The current implementation has been tested for:
 * Tailscale remote access
 * Automated ECM activation
 * Persistent AT-device naming
+* Nordic BLE single-radio capture and offline BLE PCAP inventory
+* authorization-gated GATT metadata survey and bounded typed GATT execution
+* offline assessment, cross-run correlation, device-intelligence enrichment and BSAM mapping
+* read-only BlueZ security-state inspection and redacted analysis of existing recognized key material
+* explicit bounded pairing/bond execution failure handling (the current controlled target did not establish a bond)
+* fixed three-radio CH37/CH38/CH39 BLE advertising-plane capture with manifest/channel-purity validation
+
+Current BLE regression and HIL status is tracked in
+[docs/master-development-roadmap.md](docs/master-development-roadmap.md). The
+current development branch is researching connection-context extraction and a
+dynamic data-channel receiver pool; arbitrary fixed data-channel capture is not
+yet a supported feature.
 
 ## License
 

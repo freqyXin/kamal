@@ -33,12 +33,14 @@ The dongle is programmed using Nordic's USB DFU bootloader and does not require 
 
 ### Installation
 
-Run:
+Run from the repository root:
 
 ```bash
-chmod +x setup/setup-ble-sniffer.sh
-./setup/setup-ble-sniffer.sh
+bash setup/setup-ble-sniffer.sh
 ```
+
+Using `bash` is intentional: it does not depend on the checkout preserving the
+executable bit.
 
 The installer:
 
@@ -211,7 +213,7 @@ port. Other host-to-device writes pass through unchanged.
 Start a bounded three-channel capture with an explicitly selected advertiser:
 
 ```bash
-kamal-capture ble-adv3 \
+bin/kamal-capture ble-adv3 \
     --address AA:BB:CC:DD:EE:FF \
     --duration 60
 ```
@@ -281,7 +283,7 @@ nrfutil device list
 and re-run:
 
 ```bash
-./setup/setup-ble-sniffer.sh
+bash setup/setup-ble-sniffer.sh
 ```
 
 The installer will detect DFU mode and program the BLE sniffer firmware.
@@ -311,17 +313,17 @@ K'amal's higher-level capture tooling will handle this resolution automatically.
 The BLE module is exposed through the common K'amal capture interface:
 
 ```bash
-kamal-capture ble
+bin/kamal-capture ble
 ```
 
 Supported examples include:
 
 ```bash
-kamal-capture ble --duration 60
-kamal-capture ble --name Sensor
-kamal-capture ble --address AA:BB:CC:DD:EE:FF
-kamal-capture ble --advertising-only --duration 60
-kamal-capture ble-adv3 --address AA:BB:CC:DD:EE:FF --duration 60
+bin/kamal-capture ble --duration 60
+bin/kamal-capture ble --name Sensor
+bin/kamal-capture ble --address AA:BB:CC:DD:EE:FF
+bin/kamal-capture ble --advertising-only --duration 60
+bin/kamal-capture ble-adv3 --address AA:BB:CC:DD:EE:FF --duration 60
 ```
 
 The public K'amal option names are intentionally stable even when Nordic changes

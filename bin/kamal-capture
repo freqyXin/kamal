@@ -8,7 +8,7 @@
 
 set -Eeuo pipefail
 
-VERSION="0.2.2"
+VERSION="0.2.3"
 CAPTURE_ROOT="${KAMAL_CAPTURE_ROOT:-$HOME/captures}"
 BLE_DEVICE="/dev/kamal-ble-sniffer"
 
@@ -136,8 +136,8 @@ capture_ble() {
 
     cmd=(nrfutil ble-sniffer sniff --port "$port" --output-pcap-file "$output")
     [[ -z "$target_name" ]] || cmd+=(--follow-by-name "$target_name")
-    [[ -z "$target_address" ]] || cmd+=(--follow-by-address "$target_address")
-    [[ "$advertising_only" != true ]] || cmd+=(--advertising-only)
+    [[ -z "$target_address" ]] || cmd+=(--follow "$target_address")
+    [[ "$advertising_only" != true ]] || cmd+=(--only-advertising)
 
     printf "\nK'amal BLE Capture\n==================\n\n"
     printf 'Radio:       %s\nPort:        %s\nOutput:      %s\n' "$BLE_DEVICE" "$port" "$output"

@@ -245,20 +245,26 @@ nrfutil ble-sniffer sniff \
 
 K'amal's higher-level capture tooling will handle this resolution automatically.
 
-### Planned Integration
+### K'amal Capture Interface
 
-The BLE module will ultimately be exposed through the common K'amal capture interface:
+The BLE module is exposed through the common K'amal capture interface:
 
 ```bash
 kamal-capture ble
 ```
 
-Planned functionality includes:
+Supported examples include:
 
 ```bash
 kamal-capture ble --duration 60
 kamal-capture ble --name Sensor
 kamal-capture ble --address AA:BB:CC:DD:EE:FF
+kamal-capture ble --advertising-only --duration 60
 ```
 
-This will provide automatic capture naming, metadata generation, duration handling, and consistent operation across K'amal radio modules.
+The public K'amal option names are intentionally stable even when Nordic changes
+its backend CLI spelling. With the validated `nrfutil 8.2.1` BLE-sniffer plugin,
+K'amal translates `--address` to Nordic `--follow` and K'amal
+`--advertising-only` to Nordic `--only-advertising`. The wrapper continues to
+provide automatic capture naming, metadata generation, duration handling, and
+consistent operation across K'amal radio modules.

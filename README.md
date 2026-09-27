@@ -179,6 +179,75 @@ See [Bluetooth identifier registry setup](data/bluetooth/README.md).
 For capture hardware setup, see
 [BLE sniffer documentation](docs/ble-sniffer.md).
 
+For the v0.12 Bluetooth pairing/security-state/key-evidence contracts, see
+[Bluetooth security evidence](docs/bluetooth-security-evidence.md) and
+[ADR-004](docs/adr-004-bluetooth-security-state-key-evidence.md).
+
+BLE-SEC-02 adds read-only inspection of one exact target already present in
+BlueZ's local cache/persistent store:
+
+```bash
+sudo .venv/bin/python bin/kamal-inspect-bluez-state \
+  --adapter 88:A2:9E:C6:E9:09 \
+  --target 00:1C:4D:45:DE:3F \
+  --engagement-id engagement:example \
+  --authorization-ref auth:example \
+  --json /tmp/bluez-security-state.json
+```
+
+This command does not scan, connect, pair, modify a bond, or emit raw Bluetooth
+key values.
+
+BLE-SEC-03 adds local analysis of recognized 128-bit key material already present
+in one exact BlueZ persistent `info` record:
+
+```bash
+sudo .venv/bin/python bin/kamal-analyze-bluez-keys \
+  --adapter AA:BB:CC:DD:EE:01 \
+  --target AA:BB:CC:DD:EE:FF \
+  --engagement-id engagement:example \
+  --authorization-ref auth:example \
+  --pairing-session-ref pairing:example \
+  --json /tmp/bluez-key-analysis.json
+```
+
+The analyzer reads raw key values transiently only to validate, fingerprint, and
+perform bounded local checks. It does not print them or create a second plaintext
+copy. The redacted report references the original root-controlled BlueZ `info`
+file as an `os_protected_source`. A pairing-session reference is optional for
+pre-existing bonds whose creation session is not known.
+
+BLE-SEC-04 adds separately authorized, bounded pairing/bond execution. Planning is
+non-RF:
+
+```bash
+.venv/bin/python bin/kamal-plan-pairing \
+  --authorization pairing-authorization.json \
+  --request pairing-request.json \
+  --json pairing-plan.json
+```
+
+Execution is active RF and state-changing and therefore requires the shared
+persistent BLE safety-state directory:
+
+```bash
+.venv/bin/python bin/kamal-execute-pairing \
+  --plan pairing-plan.json \
+  --authorization pairing-authorization.json \
+  --output-dir pairing-run \
+  --safety-state-dir /var/lib/kamal/ble-safety \
+  --adapter hci0
+```
+
+The BlueZ backend calls `Device1.Pair` directly, records `Paired`, `Bonded`, and
+`Trusted` separately, and never sets `Trusted`. The v0.12 BlueZ backend refuses
+pair-only execution because it cannot guarantee that `Device1.Pair` will avoid
+persistent bond state; live BlueZ execution therefore requires an explicitly
+authorized bond request. See [pairing executor](docs/pairing-executor.md).
+
+RPA resolution, key injection into capture tools, capture decryption, and bond
+removal/reset remain separately gated work.
+
 ### Releases
 
 See [v0.9.0 release notes](docs/releases/v0.9.0.md), [v0.8.0 release notes](docs/releases/v0.8.0.md) and [v0.7.0 release notes](docs/releases/v0.7.0.md).

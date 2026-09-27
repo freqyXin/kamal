@@ -1,0 +1,182 @@
+# Active BLE GATT authorization and operation contracts
+
+K'amal v0.12 separates **permission to perform an active operation** from the
+code that will eventually execute it. Increment 8 adds validation and plan
+construction only. `kamal-plan-gatt` does not import a BLE radio library,
+connect to a device, read an attribute, write an attribute, or subscribe to a
+notification.
+
+## Authorization scope
+
+An authorization record is an explicit `authorization_scope` with:
+
+- engagement, owner, operator, and location;
+- issue, start, and expiration timestamps in UTC;
+- an exact BLE target allowlist using address plus address type;
+- optionally, a metadata-survey-only `survey_scope` for an explicitly acknowledged
+  `all_discovered` environment where BLE address rotation makes a precomputed
+  exact selector set unstable;
+- an explicit list of allowed operation classes;
+- hard bounds for operation count, payload size, timeout, and subscription
+  duration;
+- separate opt-in flags for writes and write-without-response; and
+- approval metadata identifying the approver and authorization basis.
+
+The BLE address is a **scope selector**, not a stable device identity. Address
+rotation or reuse can invalidate the practical meaning of a scope record, so an
+operator must confirm the target at execution time in the later executor layer.
+
+The typed operation-plan taxonomy is deliberately small:
+
+- `read_characteristic`
+- `read_descriptor`
+- `write_characteristic`
+- `subscribe_notifications`
+
+Authorization scopes additionally support `enumerate_gatt_metadata` for the
+read-only active survey path.  It authorizes metadata enumeration only and is
+rejected if supplied as a typed `gatt_operation_request`.
+
+Unknown operation classes, including fuzzing, replay, pairing, injection, or
+arbitrary raw ATT operations, fail closed. Writes require both the explicit
+`write_characteristic` operation class and `allow_writes=true`.
+Write-without-response additionally requires
+`allow_write_without_response=true`.
+
+## Typed operation requests
+
+Each operation names one authorized BLE target and one attribute selector. A
+selector is either an ATT handle or a UUID path. Characteristic UUID paths
+require service plus characteristic UUIDs. Descriptor reads additionally
+require a descriptor UUID.
+
+Write payloads are hex-encoded whole bytes and are bounded by both the
+per-authorization limit and K'amal's hard 512-byte ceiling. Timeouts are bounded
+at 30 seconds and notification subscriptions at 300 seconds even when an
+external authorization document attempts to permit more. An authorization can
+always choose stricter limits.
+
+Notification plans carry `cleanup.unsubscribe_required=true`; this is a
+contract for the future executor, not evidence that cleanup occurred.
+
+## Plan artifacts
+
+`kamal-plan-gatt` takes two immutable inputs:
+
+```text
+bin/kamal-plan-gatt \
+  --authorization authorization.json \
+  --operations operations.json \
+  --json plan.json
+```
+
+The plan records the SHA-256 of the exact authorization bytes and operation-request
+bytes, the authorization ID and engagement, the normalized operations, and the
+UTC time at which the authorization window was evaluated. Operation order is
+preserved because sequencing may be safety-relevant to a later executor. Output
+uses K'amal's atomic no-overwrite JSON persistence helper.
+
+Every generated plan currently contains:
+
+```json
+"execution": {
+  "status": "contract_only",
+  "rf_performed": false,
+  "executor_required": true
+}
+```
+
+A valid plan therefore means **the requested operations fit the structured
+scope at plan-construction time**. It does not mean RF was attempted, an ATT
+request succeeded, application state changed, or a security impact was
+validated.
+
+## Failure semantics
+
+Plan construction fails closed when authorization is absent, not yet valid,
+expired, ambiguous, target-mismatched, over-bounded, or missing an explicit
+operation permission. Unknown fields are rejected rather than ignored so a
+misspelled safety control cannot silently disappear.
+
+This increment treats approval metadata as an auditable human authorization
+record. It does **not** claim cryptographic signature verification. A future
+policy/signature envelope can bind these same normalized contracts without
+changing the executor's operation taxonomy.
+
+## Separation from assessment rules
+
+Assessment rules still cannot initiate RF operations. A finding or heuristic
+may eventually propose a reviewed operation request, but it cannot create
+permission. Authorization and the bounded operation request must independently
+validate before a later executor is allowed to act.
+
+## Authorization-gated active metadata survey
+
+`kamal-gatt survey` remains usable without an authorization artifact when it is
+run discovery-only.  `survey --execute` is different: it performs active GATT
+connections, so v0.12 requires both `--authorization` and
+`--safety-state-dir`.
+
+The authorization must include `enumerate_gatt_metadata` and must bound the
+survey timeout and target count. Exact-target survey authorization scopes every
+executable survey address with `address_type: "unknown"`. The current survey
+discovery record preserves the BLE address but not a trustworthy public/random
+address type; requiring `unknown` keeps that limitation explicit rather than
+silently treating an unverified address type as exact. BLE addresses remain
+scope selectors, not stable identity.
+
+For a controlled environment where the owner explicitly authorizes every BLE
+device observable during the survey, an authorization may additionally contain:
+
+```json
+"survey_scope": {
+  "mode": "all_discovered",
+  "scope_acknowledged": true
+}
+```
+
+This scope is deliberately narrow. It is valid only for
+`enumerate_gatt_metadata`, cannot be combined with typed characteristic
+operations or write permissions, and is accepted only when the CLI is itself
+running `--all-discovered --acknowledge-scope`. Runtime discoveries may then use
+rotated or newly observed BLE addresses without being misclassified as outside
+scope, while the authorization's operation-count and timeout limits remain
+authoritative. Exact-target authorizations retain the original fail-closed
+address matching behavior.
+
+Active survey execution validates authorization before RF, validates the
+discovered target queue again before the first connection, and revalidates the
+current target before every connection. For dynamic all-discovered scope those
+checks verify the acknowledged policy and bounds rather than exact runtime MAC
+membership. The exact authorization SHA-256 and ID, and the dynamic survey scope
+when present, are recorded in the survey manifest and each per-device
+`active_gatt` report.
+A `survey-execution-request.json` artifact is written before RF and its SHA-256
+binds the persistent safety lease for that survey run.
+
+On BlueZ, active survey execution keeps the scanner that produced the frozen
+runtime target queue active while the sequential connection phase runs. This
+preserves the underlying BlueZ device objects used by Bleak; stopping discovery
+before the connection phase can remove transient D-Bus device objects even when
+the Python `BLEDevice` objects were retained. The queue itself remains frozen at
+the end of the configured discovery window, so advertisements observed later do
+not expand the run. Scanner stop is part of required cleanup and is recorded in
+the survey manifest.
+
+Example shape:
+
+```text
+.venv/bin/python bin/kamal-gatt survey \
+  --allowlist authorized-targets.json \
+  --execute \
+  --authorization authorization.json \
+  --safety-state-dir ~/.local/state/kamal/gatt-safety-v012 \
+  --discover-seconds 30 \
+  --max-devices 45 \
+  --timeout 5 \
+  --output-dir /path/to/new/evidence-dir
+```
+
+The active survey never reads characteristic values, writes attributes,
+subscribes to notifications, or requests pairing.  It serializes only GATT
+service, characteristic, descriptor, and characteristic-property metadata.

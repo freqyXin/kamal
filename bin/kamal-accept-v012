@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Run the offline synthetic K'amal v0.12 integration acceptance gate."""
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kamal.evidence_contracts import AtomicCreateError, atomic_create_json  # noqa: E402
+from kamal.v012_acceptance import AcceptanceError, run_v012_acceptance  # noqa: E402
+
+
+def parser():
+    p = argparse.ArgumentParser(
+        description=(
+            "Run K'amal v0.12 synthetic integration acceptance. "
+            "No real RF or network operations are performed."
+        )
+    )
+    p.add_argument("--work-dir", required=True, type=Path)
+    p.add_argument("--json", required=True, type=Path)
+    return p
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    if args.work_dir.resolve() == args.json.resolve():
+        print("kamal-accept-v012: --work-dir and --json must differ", file=sys.stderr)
+        return 1
+    if args.json.exists():
+        print(f"kamal-accept-v012: output already exists: {args.json}", file=sys.stderr)
+        return 1
+    if args.work_dir.exists():
+        print(f"kamal-accept-v012: work directory already exists: {args.work_dir}", file=sys.stderr)
+        return 1
+    try:
+        report = run_v012_acceptance(args.work_dir, repo_root=ROOT)
+        atomic_create_json(args.json, report)
+    except (AcceptanceError, AtomicCreateError, OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"kamal-accept-v012: {exc}", file=sys.stderr)
+        return 1
+    print(f"v0.12 acceptance report written: {args.json}")
+    print(f"Checks passed: {report['summary']['passed_count']}/{report['summary']['check_count']}")
+    print("No real RF or network operations were performed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

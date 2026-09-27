@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Build a validated GATT operation plan without performing RF operations."""
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from kamal.active_contracts import (  # noqa: E402
+    ContractValidationError,
+    build_gatt_operation_plan,
+    load_json_source,
+)
+from kamal.evidence_contracts import atomic_create_json  # noqa: E402
+
+
+def parser():
+    result = argparse.ArgumentParser(
+        description=(
+            "Validate authorization and construct a bounded BLE GATT operation "
+            "plan. This command performs no RF operations."
+        )
+    )
+    result.add_argument("--authorization", required=True, type=Path)
+    result.add_argument("--operations", required=True, type=Path)
+    result.add_argument("--json", required=True, type=Path)
+    return result
+
+
+def _same_path(left, right):
+    try:
+        return left.resolve() == right.resolve() or left.samefile(right)
+    except (FileNotFoundError, OSError):
+        return left.resolve() == right.resolve()
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+
+    try:
+        authorization, authorization_sha256, authorization_path = load_json_source(
+            args.authorization
+        )
+        request, request_sha256, request_path = load_json_source(args.operations)
+        output_path = args.json.resolve()
+
+        for source_path in (authorization_path, request_path):
+            if _same_path(output_path, source_path):
+                raise ContractValidationError(
+                    "output path must not overwrite an input artifact"
+                )
+
+        plan = build_gatt_operation_plan(
+            authorization,
+            request,
+            authorization_sha256=authorization_sha256,
+            request_sha256=request_sha256,
+        )
+        atomic_create_json(args.json, plan)
+    except (OSError, ContractValidationError, TypeError, KeyError) as exc:
+        print(f"kamal-plan-gatt: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"GATT operation plan written to {args.json}")
+    print("No RF operations were performed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -15,6 +15,25 @@ class ReportValidationTests(unittest.TestCase):
     def test_accepts_failed_gatt_connection(self):
         validate_report(active_report(), "active_gatt")
 
+    def test_accepts_authorized_gatt_report(self):
+        report = active_report()
+        report["authorization"] = {
+            "authorization_id": "auth:survey-1",
+            "sha256": "a" * 64,
+            "operation_class": "enumerate_gatt_metadata",
+        }
+        validate_report(report, "active_gatt")
+
+    def test_rejects_invalid_authorization_provenance(self):
+        report = active_report()
+        report["authorization"] = {
+            "authorization_id": "auth:survey-1",
+            "sha256": "not-a-digest",
+            "operation_class": "enumerate_gatt_metadata",
+        }
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            validate_report(report, "active_gatt")
+
     def test_rejects_missing_passive_field(self):
         report = passive_report()
         del report["source_metadata"]

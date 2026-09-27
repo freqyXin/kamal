@@ -8,9 +8,13 @@
 
 set -Eeuo pipefail
 
-VERSION="0.2.2"
+VERSION="0.3.0"
 CAPTURE_ROOT="${KAMAL_CAPTURE_ROOT:-$HOME/captures}"
-BLE_DEVICE="/dev/kamal-ble-sniffer"
+BLE_DEVICE="${KAMAL_BLE_DEVICE:-/dev/kamal-ble-sniffer}"
+BLE_ADV37_DEVICE="${KAMAL_BLE_ADV37_DEVICE:-/dev/kamal-ble-sniffer-37}"
+BLE_ADV38_DEVICE="${KAMAL_BLE_ADV38_DEVICE:-/dev/kamal-ble-sniffer-38}"
+BLE_ADV39_DEVICE="${KAMAL_BLE_ADV39_DEVICE:-/dev/kamal-ble-sniffer-39}"
+FIXED_ADV_PRELOAD="${KAMAL_FIXED_ADV_PRELOAD:-/usr/local/lib/kamal/libkamal-nrf-fixed-adv.so}"
 
 log() { printf '[Kamal] %s\n' "$*"; }
 warn() { printf '[Kamal] WARNING: %s\n' "$*" >&2; }
@@ -26,6 +30,7 @@ K'amal Capture v${VERSION}
 Usage:
     kamal-capture list
     kamal-capture ble [options]
+    kamal-capture ble-adv3 [options]
 
 BLE options:
     --duration SECONDS      Stop after SECONDS (positive integer).
@@ -35,12 +40,19 @@ BLE options:
     --advertising-only      Capture advertising traffic only.
     -h, --help              Show this help.
 
+BLE three-channel advertising-plane options:
+    --duration SECONDS      Concurrent steady-state capture duration (required).
+    --address ADDRESS       Advertiser address to follow (required).
+    --output-dir DIR        New directory for three PCAPs and manifest.
+    --acquire-timeout SEC   Max seconds to wait for each follow request (default: 35).
+
 Examples:
     kamal-capture list
     kamal-capture ble --duration 60
     kamal-capture ble --name Sensor
     kamal-capture ble --address AA:BB:CC:DD:EE:FF
     kamal-capture ble --duration 300 --output test.pcap
+    kamal-capture ble-adv3 --address AA:BB:CC:DD:EE:FF --duration 60
 EOF
 }
 
@@ -66,6 +78,22 @@ radio_list() {
     else
         printf '  %-12s %s\n' 'Status:' 'NOT FOUND'
     fi
+
+    printf '\nBLE Advertising Plane\n'
+    local adv_device="" adv_channel=""
+    for adv_channel in 37 38 39; do
+        case "$adv_channel" in
+            37) adv_device="$BLE_ADV37_DEVICE" ;;
+            38) adv_device="$BLE_ADV38_DEVICE" ;;
+            39) adv_device="$BLE_ADV39_DEVICE" ;;
+        esac
+        if [[ -e "$adv_device" ]]; then
+            resolved="$(readlink -e "$adv_device" || true)"
+            printf '  CH%-9s %s -> %s\n' "$adv_channel" "$adv_device" "${resolved:-unknown}"
+        else
+            printf '  CH%-9s %s\n' "$adv_channel" 'NOT FOUND'
+        fi
+    done
 
     printf '\nCellular\n'
     if [[ -d /sys/class/net/wwan0 ]]; then
@@ -136,8 +164,8 @@ capture_ble() {
 
     cmd=(nrfutil ble-sniffer sniff --port "$port" --output-pcap-file "$output")
     [[ -z "$target_name" ]] || cmd+=(--follow-by-name "$target_name")
-    [[ -z "$target_address" ]] || cmd+=(--follow-by-address "$target_address")
-    [[ "$advertising_only" != true ]] || cmd+=(--advertising-only)
+    [[ -z "$target_address" ]] || cmd+=(--follow "$target_address")
+    [[ "$advertising_only" != true ]] || cmd+=(--only-advertising)
 
     printf "\nK'amal BLE Capture\n==================\n\n"
     printf 'Radio:       %s\nPort:        %s\nOutput:      %s\n' "$BLE_DEVICE" "$port" "$output"
@@ -300,11 +328,362 @@ PY
     printf '\nSaved:\n%s\n' "$output"
 }
 
+
+capture_ble_adv3() {
+    local duration="" target_address="" output_dir="" acquire_timeout="35"
+    local date_dir="" timestamp="" hostname="" start_time="" end_time=""
+    local steady_start_ns="" steady_end_ns="" steady_wall_duration=""
+    local overall_status="ok" manifest="" channel="" timer_pid=""
+    local -a channels=(37 38 39)
+    local -A device port serial pid ready meta pcap stdout_file stderr_file stop_rc
+    local -A packet_count size_bytes sha256 ch37_count ch38_count ch39_count other_count
+    local -A mutation_count follow_request_count off_channel_count
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --duration|--address|--output-dir|--acquire-timeout)
+                [[ $# -ge 2 && -n "$2" ]] || die "$1 requires a value."
+                case "$1" in
+                    --duration) duration="$2" ;;
+                    --address) target_address="$2" ;;
+                    --output-dir) output_dir="$2" ;;
+                    --acquire-timeout) acquire_timeout="$2" ;;
+                esac
+                shift 2
+                ;;
+            -h|--help) usage; return 0 ;;
+            *) die "Unknown BLE three-channel option: $1" ;;
+        esac
+    done
+
+    [[ -n "$duration" ]] || die 'ble-adv3 requires --duration.'
+    [[ "$duration" =~ ^[0-9]+$ && "$duration" =~ [1-9] ]] ||
+        die 'Duration must be a positive integer number of seconds.'
+    [[ -n "$target_address" ]] || die 'ble-adv3 requires --address.'
+    [[ "$target_address" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]] ||
+        die 'Address must be a six-octet Bluetooth address.'
+    [[ "$acquire_timeout" =~ ^[0-9]+$ && "$acquire_timeout" =~ [1-9] ]] ||
+        die 'Acquire timeout must be a positive integer number of seconds.'
+
+    for dependency in nrfutil python3 capinfos tshark udevadm stat awk sha256sum readlink date hostname mkdir setsid grep sleep kill; do
+        require_command "$dependency"
+    done
+    [[ -r "$FIXED_ADV_PRELOAD" ]] ||
+        die "Fixed advertising-channel adapter not found: $FIXED_ADV_PRELOAD (run setup/setup-ble-sniffer.sh)."
+
+    device[37]="$BLE_ADV37_DEVICE"
+    device[38]="$BLE_ADV38_DEVICE"
+    device[39]="$BLE_ADV39_DEVICE"
+
+    for channel in "${channels[@]}"; do
+        [[ -e "${device[$channel]}" ]] ||
+            die "BLE CH${channel} capture radio not found: ${device[$channel]}"
+        port[$channel]="$(readlink -e "${device[$channel]}")"
+        [[ -n "${port[$channel]}" ]] ||
+            die "Unable to resolve ${device[$channel]}"
+        serial[$channel]="$(udevadm info --query=property --name="${port[$channel]}" 2>/dev/null | sed -n 's/^ID_SERIAL_SHORT=//p' || true)"
+    done
+
+    [[ "${port[37]}" != "${port[38]}" && "${port[37]}" != "${port[39]}" && "${port[38]}" != "${port[39]}" ]] ||
+        die 'ble-adv3 requires three distinct BLE sniffer devices.'
+
+    date_dir="$(date +%Y-%m-%d)"
+    timestamp="$(date +%H%M%S)"
+    hostname="$(hostname -s)"
+    if [[ -z "$output_dir" ]]; then
+        output_dir="${CAPTURE_ROOT}/ble/${date_dir}/${hostname}_ble_adv3_${timestamp}"
+    elif [[ "$output_dir" != /* ]]; then
+        output_dir="${PWD}/${output_dir}"
+    fi
+    [[ ! -e "$output_dir" && ! -L "$output_dir" ]] ||
+        die "Output path already exists: $output_dir"
+    mkdir -p "$output_dir"
+    manifest="$output_dir/manifest.json"
+
+    for channel in "${channels[@]}"; do
+        ready[$channel]="$output_dir/ch${channel}.follow-request"
+        meta[$channel]="$output_dir/ch${channel}.shim.log"
+        pcap[$channel]="$output_dir/ch${channel}.pcap"
+        stdout_file[$channel]="$output_dir/ch${channel}.stdout.log"
+        stderr_file[$channel]="$output_dir/ch${channel}.stderr.log"
+    done
+
+    printf "\nK'amal BLE Three-Channel Advertising Plane\n==========================================\n\n"
+    printf 'Target addr:       %s\n' "$target_address"
+    printf 'Steady duration:   %s seconds\n' "$duration"
+    printf 'Acquire timeout:   %s seconds per receiver\n' "$acquire_timeout"
+    printf 'Output directory:  %s\n' "$output_dir"
+    for channel in "${channels[@]}"; do
+        printf 'CH%s:               %s -> %s (serial %s)\n' \
+            "$channel" "${device[$channel]}" "${port[$channel]}" "${serial[$channel]:-unknown}"
+    done
+    printf '\n'
+
+    start_receiver() {
+        local ch="$1"
+        setsid env \
+            LD_PRELOAD="$FIXED_ADV_PRELOAD" \
+            KAMAL_PRELOAD_TARGET="${port[$ch]}" \
+            KAMAL_PRELOAD_METALOG="${meta[$ch]}" \
+            KAMAL_PRELOAD_READY_FILE="${ready[$ch]}" \
+            KAMAL_FIXED_ADV_CHANNEL="$ch" \
+            nrfutil ble-sniffer sniff \
+                --port "${port[$ch]}" \
+                --baudrate 1000000 \
+                --follow "$target_address" \
+                --only-advertising \
+                --output-pcap-file "${pcap[$ch]}" \
+                >"${stdout_file[$ch]}" \
+                2>"${stderr_file[$ch]}" &
+        pid[$ch]=$!
+    }
+
+    wait_for_follow_request() {
+        local ch="$1" deadline=$((SECONDS + acquire_timeout))
+        while (( SECONDS < deadline )); do
+            [[ -s "${ready[$ch]}" ]] && return 0
+            kill -0 "${pid[$ch]}" 2>/dev/null || return 1
+            sleep 0.1
+        done
+        return 1
+    }
+
+    stop_receiver() {
+        local ch="$1"
+        local receiver_pid="${pid[$ch]:-}" rc=0 deadline=""
+        [[ -n "$receiver_pid" ]] || { stop_rc[$ch]="not-started"; return 0; }
+        if kill -0 "$receiver_pid" 2>/dev/null; then
+            kill -INT -- "-$receiver_pid" 2>/dev/null || kill -INT "$receiver_pid" 2>/dev/null || true
+            deadline=$((SECONDS + 4))
+            while kill -0 "$receiver_pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 0.1; done
+            if kill -0 "$receiver_pid" 2>/dev/null; then
+                kill -TERM -- "-$receiver_pid" 2>/dev/null || kill -TERM "$receiver_pid" 2>/dev/null || true
+                deadline=$((SECONDS + 2))
+                while kill -0 "$receiver_pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 0.1; done
+            fi
+            if kill -0 "$receiver_pid" 2>/dev/null; then
+                kill -KILL -- "-$receiver_pid" 2>/dev/null || kill -KILL "$receiver_pid" 2>/dev/null || true
+            fi
+        fi
+        wait "$receiver_pid" 2>/dev/null || rc=$?
+        stop_rc[$ch]="$rc"
+    }
+
+    cleanup_adv3() {
+        local ch=""
+        set +e
+        [[ -n "$timer_pid" ]] && kill "$timer_pid" 2>/dev/null || true
+        for ch in "${channels[@]}"; do
+            if [[ -n "${pid[$ch]:-}" ]] && kill -0 "${pid[$ch]}" 2>/dev/null; then
+                kill -KILL -- "-${pid[$ch]}" 2>/dev/null || kill -KILL "${pid[$ch]}" 2>/dev/null || true
+                wait "${pid[$ch]}" 2>/dev/null || true
+            fi
+        done
+    }
+
+    abort_adv3() {
+        local ch=""
+        set +e
+        [[ -n "$timer_pid" ]] && kill "$timer_pid" 2>/dev/null || true
+        for ch in "${channels[@]}"; do
+            stop_receiver "$ch"
+        done
+        trap - EXIT INT TERM HUP
+        exit 130
+    }
+
+    trap cleanup_adv3 EXIT
+    trap abort_adv3 INT TERM HUP
+
+    start_time="$(date --iso-8601=seconds)"
+    for channel in "${channels[@]}"; do
+        start_receiver "$channel"
+        if ! wait_for_follow_request "$channel"; then
+            overall_status="follow-request-failed"
+            warn "CH${channel} did not issue its follow request within ${acquire_timeout} seconds."
+            break
+        fi
+        log "CH${channel} fixed-channel command applied and follow request sent."
+        sleep 0.25
+    done
+
+    if [[ "$overall_status" == "ok" ]]; then
+        steady_start_ns="$(date +%s%N)"
+        sleep "$duration" & timer_pid=$!
+        wait "$timer_pid"
+        timer_pid=""
+        steady_end_ns="$(date +%s%N)"
+        steady_wall_duration="$(awk -v start="$steady_start_ns" -v end="$steady_end_ns" 'BEGIN {printf "%.3f", (end-start)/1000000000}')"
+    fi
+
+    for channel in "${channels[@]}"; do
+        stop_receiver "$channel"
+    done
+    end_time="$(date --iso-8601=seconds)"
+    trap - EXIT INT TERM HUP
+
+    for channel in "${channels[@]}"; do
+        packet_count[$channel]=0
+        size_bytes[$channel]=0
+        sha256[$channel]=""
+        ch37_count[$channel]=0
+        ch38_count[$channel]=0
+        ch39_count[$channel]=0
+        other_count[$channel]=0
+        mutation_count[$channel]=0
+        follow_request_count[$channel]=0
+        off_channel_count[$channel]=0
+
+        if [[ ! -s "${pcap[$channel]}" ]]; then
+            [[ "$overall_status" != "ok" ]] || overall_status="capture-missing"
+            continue
+        fi
+
+        local capinfo=""
+        capinfo="$(capinfos "${pcap[$channel]}")" || {
+            [[ "$overall_status" != "ok" ]] || overall_status="capture-invalid"
+            continue
+        }
+        packet_count[$channel]="$(awk -F: '/Number of packets:/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' <<< "$capinfo")"
+        size_bytes[$channel]="$(stat -c '%s' "${pcap[$channel]}")"
+        sha256[$channel]="$(sha256sum "${pcap[$channel]}" | awk '{print $1}')"
+
+        read -r ch37_count[$channel] ch38_count[$channel] ch39_count[$channel] other_count[$channel] < <(
+            tshark -r "${pcap[$channel]}" -T fields -e nordic_ble.channel 2>/dev/null |
+            awk '
+              NF {
+                if ($1 == 37) c37++;
+                else if ($1 == 38) c38++;
+                else if ($1 == 39) c39++;
+                else other++;
+              }
+              END { print c37+0, c38+0, c39+0, other+0 }
+            '
+        )
+
+        mutation_count[$channel]="$(grep -c '^MUTATED ' "${meta[$channel]}" 2>/dev/null || true)"
+        follow_request_count[$channel]="$(grep -c '^FOLLOW_REQUEST_SENT$' "${meta[$channel]}" 2>/dev/null || true)"
+
+        if ! [[ "${packet_count[$channel]}" =~ ^[0-9]+$ ]] || (( packet_count[$channel] <= 0 )); then
+            [[ "$overall_status" != "ok" ]] || overall_status="capture-empty"
+        fi
+
+        case "$channel" in
+            37) off_channel_count[$channel]=$((ch38_count[$channel] + ch39_count[$channel] + other_count[$channel])) ;;
+            38) off_channel_count[$channel]=$((ch37_count[$channel] + ch39_count[$channel] + other_count[$channel])) ;;
+            39) off_channel_count[$channel]=$((ch37_count[$channel] + ch38_count[$channel] + other_count[$channel])) ;;
+        esac
+
+        if (( mutation_count[$channel] != 1 || follow_request_count[$channel] != 1 || off_channel_count[$channel] != 0 )); then
+            [[ "$overall_status" != "ok" ]] || overall_status="channel-validation-failed"
+        fi
+    done
+
+    python3 - \
+        "$manifest" "$hostname" "$start_time" "$end_time" "$duration" "${steady_wall_duration:-0}" \
+        "$target_address" "$overall_status" "$FIXED_ADV_PRELOAD" \
+        "${device[37]}" "${port[37]}" "${serial[37]}" "${pcap[37]}" "${packet_count[37]}" "${size_bytes[37]}" "${sha256[37]}" "${ch37_count[37]}" "${ch38_count[37]}" "${ch39_count[37]}" "${other_count[37]}" "${mutation_count[37]}" "${follow_request_count[37]}" "${stop_rc[37]}" \
+        "${device[38]}" "${port[38]}" "${serial[38]}" "${pcap[38]}" "${packet_count[38]}" "${size_bytes[38]}" "${sha256[38]}" "${ch37_count[38]}" "${ch38_count[38]}" "${ch39_count[38]}" "${other_count[38]}" "${mutation_count[38]}" "${follow_request_count[38]}" "${stop_rc[38]}" \
+        "${device[39]}" "${port[39]}" "${serial[39]}" "${pcap[39]}" "${packet_count[39]}" "${size_bytes[39]}" "${sha256[39]}" "${ch37_count[39]}" "${ch38_count[39]}" "${ch39_count[39]}" "${other_count[39]}" "${mutation_count[39]}" "${follow_request_count[39]}" "${stop_rc[39]}" <<'PY'
+import json
+import os
+import sys
+
+args = iter(sys.argv[1:])
+manifest = next(args)
+hostname = next(args)
+start_time = next(args)
+end_time = next(args)
+duration = int(next(args))
+steady_wall = float(next(args))
+target_address = next(args)
+status = next(args)
+preload = next(args)
+
+radios = []
+for channel in (37, 38, 39):
+    device = next(args)
+    port = next(args)
+    serial = next(args)
+    pcap = next(args)
+    packets = int(next(args))
+    size = int(next(args))
+    digest = next(args) or None
+    counts = {
+        "37": int(next(args)),
+        "38": int(next(args)),
+        "39": int(next(args)),
+        "other": int(next(args)),
+    }
+    mutations = int(next(args))
+    follow_requests = int(next(args)
+    )
+    stop_rc = next(args)
+    off_channel = sum(value for key, value in counts.items() if key != str(channel))
+    radios.append({
+        "channel": channel,
+        "device": device,
+        "resolved_device": port,
+        "serial": serial or None,
+        "pcap": {
+            "file": os.path.basename(pcap),
+            "packet_count": packets,
+            "size_bytes": size,
+            "sha256": digest,
+            "channel_counts": counts,
+            "off_channel_packets": off_channel,
+        },
+        "adapter": {
+            "hop_sequence_mutations": mutations,
+            "follow_requests_sent": follow_requests,
+        },
+        "stop_rc": stop_rc,
+    })
+
+metadata = {
+    "schema_version": "1.0",
+    "capture": {
+        "type": "ble-fixed-advertising-plane",
+        "hostname": hostname,
+        "start_time": start_time,
+        "end_time": end_time,
+        "requested_steady_duration_seconds": duration,
+        "steady_wall_duration_seconds": steady_wall,
+        "status": status,
+    },
+    "target": {"address": target_address},
+    "orchestration": {
+        "staggered_follow_request_start": True,
+        "follow_request_is_host_command_evidence": True,
+        "follow_request_is_not_rf_acquisition_confirmation": True,
+        "preload_adapter": preload,
+    },
+    "radios": radios,
+}
+
+with open(manifest, "x", encoding="utf-8") as handle:
+    json.dump(metadata, handle, indent=2)
+    handle.write("\n")
+PY
+
+    printf '\nThree-channel BLE advertising capture complete.\n\n'
+    for channel in "${channels[@]}"; do
+        printf 'CH%s packets: %-8s off-channel: %-5s SHA256: %s\n' \
+            "$channel" "${packet_count[$channel]}" "${off_channel_count[$channel]}" "${sha256[$channel]:-unavailable}"
+    done
+    printf 'Manifest: %s\n' "$manifest"
+    printf 'Status:   %s\n' "$overall_status"
+
+    [[ "$overall_status" == "ok" ]] ||
+        die "BLE three-channel advertising capture completed with status: $overall_status"
+}
+
 main() {
     [[ $# -gt 0 ]] || { usage; exit 1; }
     case "$1" in
         list) shift; [[ $# -eq 0 ]] || die 'list takes no arguments.'; radio_list ;;
         ble) shift; capture_ble "$@" ;;
+        ble-adv3) shift; capture_ble_adv3 "$@" ;;
         version|--version) printf 'kamal-capture %s\n' "$VERSION" ;;
         help|-h|--help) usage ;;
         *) die "Unknown capture type: $1" ;;

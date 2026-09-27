@@ -60,8 +60,18 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(len(assessment["sources"]), 2)
         self.assertEqual(len(assessment["observations"]), 2)
         self.assertEqual(assessment["relationships"], [])
+        self.assertEqual(assessment["catalog_provenance"], [])
         self.assertEqual(assessment["findings"], [])
         self.assertEqual(assessment["integrity"]["finding_count"], 0)
+        self.assertEqual(assessment["evidence_contract_version"], "0.12.0")
+        for source in assessment["sources"]:
+            self.assertEqual(source["record_type"], "evidence_source")
+            self.assertEqual(source["contract_version"], "0.12.0")
+            self.assertIn(source["collection_mode"], {"passive", "active"})
+        for observation in assessment["observations"]:
+            self.assertEqual(observation["record_type"], "observation")
+            self.assertEqual(observation["contract_version"], "0.12.0")
+            self.assertIsNone(observation["authorization_ref"])
 
         reports = [
             observation["report"]
@@ -72,6 +82,45 @@ class AssessmentTests(unittest.TestCase):
             {report["schema_version"] for report in reports},
             {"0.6.0", "0.7.0"},
         )
+
+    def test_active_report_authorization_is_carried_to_observation(self):
+        report = active_report()
+        report["authorization"] = {
+            "authorization_id": "auth:survey-1",
+            "sha256": "a" * 64,
+            "operation_class": "enumerate_gatt_metadata",
+        }
+        source = load_source(self.write_report("active-auth.json", report))
+
+        assessment = build_assessment(
+            [source],
+            assessment_id="authorized-active",
+        )
+
+        self.assertEqual(
+            assessment["observations"][0]["authorization_ref"],
+            "auth:survey-1",
+        )
+
+    def test_preserves_explicit_catalog_provenance(self):
+        source = load_source(self.write_report("active.json", active_report()))
+        digest = "b" * 64
+        assessment = build_assessment(
+            [source],
+            assessment_id="catalog-test",
+            catalog_provenance=[{
+                "catalog_type": "ble_device_intelligence",
+                "catalog_id": "test-catalog",
+                "revision": f"sha256:{digest}",
+                "usage": "available",
+                "path": "/tmp/test-catalog.json",
+                "sha256": digest,
+            }],
+        )
+        provenance = assessment["catalog_provenance"][0]
+        self.assertEqual(provenance["catalog_id"], "test-catalog")
+        self.assertEqual(provenance["revision"], f"sha256:{digest}")
+        self.assertEqual(provenance["usage"], "available")
 
     def test_rejects_duplicate_source(self):
         source = load_source(self.write_report("passive.json", passive_report()))

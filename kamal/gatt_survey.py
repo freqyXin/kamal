@@ -1,5 +1,6 @@
 """Target selection policy for authorized BLE surveys."""
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,6 +95,32 @@ def validate_discovery_settings(discover_seconds, max_devices):
         raise ValueError("max_devices must be between 1 and 100")
 
 
+def _records_from_discovered(discovered, policy, max_devices):
+    """Freeze one discovery snapshot into deterministic survey records."""
+    normalized = {
+        address.upper(): value
+        for address, value in discovered.items()
+        if isinstance(address, str) and address.strip()
+    }
+
+    summary = summarize_discovery(
+        normalized.keys(),
+        policy,
+        max_devices,
+    )
+
+    records = [
+        {
+            "address": address,
+            "device": normalized[address][0],
+            "advertisement": normalized[address][1],
+        }
+        for address in summary["targets"]
+    ]
+
+    return summary, records
+
+
 async def discover_target_records(
     *,
     policy: SurveyTargetPolicy,
@@ -121,28 +148,70 @@ async def discover_target_records(
         bluez={"adapter": adapter},
     )
 
-    normalized = {
-        address.upper(): value
-        for address, value in discovered.items()
-        if isinstance(address, str) and address.strip()
-    }
-
-    summary = summarize_discovery(
-        normalized.keys(),
+    return _records_from_discovered(
+        discovered,
         policy,
         max_devices,
     )
 
-    records = [
-        {
-            "address": address,
-            "device": normalized[address][0],
-            "advertisement": normalized[address][1],
-        }
-        for address in summary["targets"]
-    ]
 
-    return summary, records
+async def start_live_target_record_discovery(
+    *,
+    policy: SurveyTargetPolicy,
+    adapter: str,
+    discover_seconds: float = 30,
+    max_devices: int = 50,
+    scanner_factory=None,
+    sleep=asyncio.sleep,
+):
+    """Freeze a target snapshot while leaving the scanner active.
+
+    BlueZ may remove transient device objects when discovery stops.  Active
+    surveys therefore keep the scanner that created the BLEDevice objects
+    alive until the sequential connection phase is complete.  The returned
+    records are a frozen snapshot; later advertisements do not expand the
+    authorized queue.
+    """
+    validate_discovery_settings(discover_seconds, max_devices)
+
+    if not isinstance(policy, SurveyTargetPolicy):
+        raise TypeError("policy must be a SurveyTargetPolicy")
+
+    if not isinstance(adapter, str) or not adapter.strip():
+        raise ValueError("adapter must be a nonempty string")
+
+    if scanner_factory is None:
+        from bleak import BleakScanner
+        scanner_factory = BleakScanner
+
+    scanner = scanner_factory(
+        bluez={"adapter": adapter},
+    )
+    started = False
+
+    try:
+        await scanner.start()
+        started = True
+        await sleep(discover_seconds)
+        discovered = dict(
+            scanner.discovered_devices_and_advertisement_data
+        )
+        summary, records = _records_from_discovered(
+            discovered,
+            policy,
+            max_devices,
+        )
+        return scanner, summary, records
+    except Exception:
+        if started:
+            try:
+                await scanner.stop()
+            except Exception as stop_exc:
+                raise RuntimeError(
+                    "live discovery failed and scanner cleanup also failed: "
+                    f"{type(stop_exc).__name__}: {stop_exc}"
+                ) from stop_exc
+        raise
 
 
 async def discover_target_queue(
@@ -337,7 +406,13 @@ def summarize_survey_execution(target_count, outcomes):
     }
 
 
-def build_execution_manifest(target_count, outcomes, abort_error=None):
+def build_execution_manifest(
+    target_count,
+    outcomes,
+    abort_error=None,
+    *,
+    abort_cleanup_confirmed=False,
+):
     """Build serializable execution state for the survey manifest."""
     summary = summarize_survey_execution(target_count, outcomes)
 
@@ -360,7 +435,7 @@ def build_execution_manifest(target_count, outcomes, abort_error=None):
         execution["abort"] = {
             "address": abort_error.address,
             "error": f"{type(abort_error.cause).__name__}: {abort_error.cause}",
-            "cleanup_confirmed": False,
+            "cleanup_confirmed": bool(abort_cleanup_confirmed),
         }
 
     return execution

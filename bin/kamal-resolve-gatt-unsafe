@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Record explicit operator recovery and clear a GATT safety interlock."""
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kamal.gatt_safety import SafetyInterlockError, resolve_interlock
+
+
+def parser():
+    p = argparse.ArgumentParser(
+        description="Resolve a blocked K'amal GATT safety interlock after operator-verified recovery."
+    )
+    p.add_argument("--state-dir", required=True, type=Path)
+    p.add_argument("--request", required=True, type=Path)
+    return p
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        raw = args.request.resolve().read_bytes()
+        request = json.loads(raw)
+        artifact, path = resolve_interlock(
+            args.state_dir,
+            request,
+            request_sha256=hashlib.sha256(raw).hexdigest(),
+        )
+    except (OSError, json.JSONDecodeError, SafetyInterlockError, ValueError, TypeError) as exc:
+        print(f"kamal-resolve-gatt-unsafe: {exc}", file=sys.stderr)
+        return 1
+    print(f"GATT safety recovery recorded: {path}")
+    print(f"Recovery ID: {artifact['recovery']['recovery_id']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

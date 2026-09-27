@@ -8,9 +8,9 @@ from kamal.assessment import build_assessment
 class AssessmentFindingTests(unittest.TestCase):
     def setUp(self):
         self.source = {
-            "source_id": "sha256:test",
+            "source_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "path": "/tmp/test.json",
-            "sha256": "test",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "evidence_type": "active_gatt",
             "schema_version": "0.7.0",
             "report": {
@@ -29,7 +29,7 @@ class AssessmentFindingTests(unittest.TestCase):
             "confidence": "low",
             "status": "potential",
             "evidence": [{
-                "observation_id": "observation:sha256:test",
+                "observation_id": "observation:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "path": path,
             }],
             "description": "Observed condition.",

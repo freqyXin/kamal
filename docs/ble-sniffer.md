@@ -171,6 +171,67 @@ Product: nRF Sniffer for Bluetooth LE
 
 This is the normal operational state for BLE capture.
 
+
+### Three-Channel Advertising Observation Plane
+
+K'amal can use three nRF52840 sniffers as a fixed primary-advertising
+observation plane. Each receiver is pinned to one advertising channel:
+
+```text
+/dev/kamal-ble-sniffer-37  -> channel 37
+/dev/kamal-ble-sniffer-38  -> channel 38
+/dev/kamal-ble-sniffer-39  -> channel 39
+```
+
+The aliases are keyed by each dongle's application-mode USB serial number; they
+do not depend on `/dev/ttyACM*` enumeration order. The legacy
+`/dev/kamal-ble-sniffer` alias remains available for normal single-radio
+capture.
+
+When exactly three sniffers are connected, provisioning assigns those three
+automatically. If more than three are connected, provisioning fails closed
+unless the advertising-plane radios are selected explicitly with
+`KAMAL_BLE_ADV37_SERIAL`, `KAMAL_BLE_ADV38_SERIAL`, and
+`KAMAL_BLE_ADV39_SERIAL`. This prevents adding future receiver-pool hardware
+from silently changing the fixed advertising-plane assignments.
+
+The mode was hardware-validated with `nrfutil 8.2.1`, BLE-sniffer plugin
+`0.21.0`, and Nordic nRF Sniffer for Bluetooth LE firmware `4.1.1`. The current
+Nordic CLI does not expose the firmware's one-entry advertising hop sequence,
+so `setup/setup-ble-sniffer.sh` installs a small K'amal `LD_PRELOAD` adapter at:
+
+```text
+/usr/local/lib/kamal/libkamal-nrf-fixed-adv.so
+```
+
+The adapter rewrites only the validated Nordic
+`SET_ADV_CHANNEL_HOP_SEQ [37,38,39]` command for the explicitly selected serial
+port. Other host-to-device writes pass through unchanged.
+
+Start a bounded three-channel capture with an explicitly selected advertiser:
+
+```bash
+kamal-capture ble-adv3 \
+    --address AA:BB:CC:DD:EE:FF \
+    --duration 60
+```
+
+K'amal starts the receivers sequentially and waits until each nrfutil process
+has sent its follow request before starting the next receiver. This stagger is
+required by the validated three-radio workflow. The follow-request marker is
+host-command evidence only; it is **not** proof that the target has already
+been acquired over RF.
+
+After all three follow requests have been sent, the requested steady-state
+capture duration begins. The output directory contains one PCAP per channel,
+shim logs, process logs, and `manifest.json`. The manifest records radio serials,
+resolved ports, channel counts, off-channel packet counts, PCAP SHA-256 digests,
+and the distinction between follow-request issuance and RF acquisition.
+
+The three PCAPs intentionally remain separate. K'amal does not currently merge
+them because Nordic packet timestamps can contain discontinuities that require
+separate correlation handling.
+
 ### Troubleshooting
 
 #### `/dev/kamal-ble-sniffer` does not exist
@@ -245,20 +306,27 @@ nrfutil ble-sniffer sniff \
 
 K'amal's higher-level capture tooling will handle this resolution automatically.
 
-### Planned Integration
+### K'amal Capture Interface
 
-The BLE module will ultimately be exposed through the common K'amal capture interface:
+The BLE module is exposed through the common K'amal capture interface:
 
 ```bash
 kamal-capture ble
 ```
 
-Planned functionality includes:
+Supported examples include:
 
 ```bash
 kamal-capture ble --duration 60
 kamal-capture ble --name Sensor
 kamal-capture ble --address AA:BB:CC:DD:EE:FF
+kamal-capture ble --advertising-only --duration 60
+kamal-capture ble-adv3 --address AA:BB:CC:DD:EE:FF --duration 60
 ```
 
-This will provide automatic capture naming, metadata generation, duration handling, and consistent operation across K'amal radio modules.
+The public K'amal option names are intentionally stable even when Nordic changes
+its backend CLI spelling. With the validated `nrfutil 8.2.1` BLE-sniffer plugin,
+K'amal translates `--address` to Nordic `--follow` and K'amal
+`--advertising-only` to Nordic `--only-advertising`. The wrapper continues to
+provide automatic capture naming, metadata generation, duration handling, and
+consistent operation across K'amal radio modules.

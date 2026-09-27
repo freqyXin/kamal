@@ -5,6 +5,7 @@ __pycache__/
 
 # Generated Bluetooth SIG Assigned Numbers registries
 data/bluetooth/*.json
+data/bluetooth/snapshots/
 
 # Python bytecode
 __pycache__/

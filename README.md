@@ -215,9 +215,38 @@ The analyzer reads raw key values transiently only to validate, fingerprint, and
 perform bounded local checks. It does not print them or create a second plaintext
 copy. The redacted report references the original root-controlled BlueZ `info`
 file as an `os_protected_source`. A pairing-session reference is optional for
-pre-existing bonds whose creation session is not known. Pairing, bond mutation,
-RPA resolution, key injection into capture tools, and capture decryption remain
-separately gated work.
+pre-existing bonds whose creation session is not known.
+
+BLE-SEC-04 adds separately authorized, bounded pairing/bond execution. Planning is
+non-RF:
+
+```bash
+.venv/bin/python bin/kamal-plan-pairing \
+  --authorization pairing-authorization.json \
+  --request pairing-request.json \
+  --json pairing-plan.json
+```
+
+Execution is active RF and state-changing and therefore requires the shared
+persistent BLE safety-state directory:
+
+```bash
+.venv/bin/python bin/kamal-execute-pairing \
+  --plan pairing-plan.json \
+  --authorization pairing-authorization.json \
+  --output-dir pairing-run \
+  --safety-state-dir /var/lib/kamal/ble-safety \
+  --adapter hci0
+```
+
+The BlueZ backend calls `Device1.Pair` directly, records `Paired`, `Bonded`, and
+`Trusted` separately, and never sets `Trusted`. The v0.12 BlueZ backend refuses
+pair-only execution because it cannot guarantee that `Device1.Pair` will avoid
+persistent bond state; live BlueZ execution therefore requires an explicitly
+authorized bond request. See [pairing executor](docs/pairing-executor.md).
+
+RPA resolution, key injection into capture tools, capture decryption, and bond
+removal/reset remain separately gated work.
 
 ### Releases
 

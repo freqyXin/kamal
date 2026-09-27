@@ -1,9 +1,10 @@
-# GATT execution safety interlock
+# Active BLE execution safety interlock
 
-K'amal active GATT execution uses a persistent safety-state directory that is
-separate from per-run evidence.  Every `kamal-execute-gatt` invocation and every
-`kamal-gatt survey --execute` run requires `--safety-state-dir`.  The directory
-provides two fail-closed controls:
+K'amal active BLE execution uses a persistent safety-state directory that is
+separate from per-run evidence. Every `kamal-execute-gatt` invocation, every
+`kamal-gatt survey --execute` run, and BLE-SEC-04 pairing execution through
+`kamal-execute-pairing` requires `--safety-state-dir`. The directory provides two
+fail-closed controls:
 
 - `active-run.json` is a single-executor lease created before RF work.  A second
   executor cannot start while that file exists.  If a process crashes or is
@@ -27,6 +28,14 @@ target queue is inspected so transient BlueZ device objects remain available to
 Bleak. Scanner shutdown is therefore part of survey cleanup: the lease is not
 released as clear until scanner stop is confirmed, and an unconfirmed scanner
 stop publishes the recovery-required latch.
+
+BLE-SEC-04 pairing deliberately reuses the same lease so an explicit pairing run
+cannot overlap active GATT work. Pairing holds the lease across bounded target
+discovery, the single Pair attempt, disconnect, scanner shutdown, and agent/D-Bus
+cleanup. An unconfirmed `CancelPairing`, disconnect, scanner stop, or pairing
+backend cleanup publishes the same recovery-required latch. The v0.12 state-file
+record types retain their historical `gatt_*` names for compatibility; pairing
+is still a separate authorization and executor domain.
 
 ## Connection loss
 

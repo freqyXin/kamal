@@ -81,6 +81,21 @@ class V012AcceptanceTests(unittest.TestCase):
         self.assertFalse((work / "safety" / "active-run.json").exists())
         self.assertFalse((work / "safety" / "unsafe-stop.json").exists())
 
+    def test_synthetic_pairing_is_explicit_and_does_not_trust(self):
+        report, work = self.run_acceptance()
+        self.assertTrue(report["checks"]["synthetic_pairing_completed"])
+        self.assertTrue(report["checks"]["pairing_did_not_silently_trust_target"])
+        self.assertTrue(
+            report["checks"]["pairing_safety_interlock_clear_after_happy_path"]
+        )
+        final = json.loads(
+            (work / "pairing-execution" / "run-final.json").read_text()
+        )
+        self.assertTrue(final["state_after"]["paired"])
+        self.assertTrue(final["state_after"]["bonded"])
+        self.assertFalse(final["state_after"]["trusted"])
+        self.assertFalse(final["state_after"]["connected"])
+
     def test_artifact_records_have_real_hashes_and_sizes(self):
         report, _ = self.run_acceptance()
         for name, ref in report["artifacts"].items():
@@ -104,6 +119,7 @@ class V012AcceptanceTests(unittest.TestCase):
         self.assertIn("bluetooth_security.py", report["offline_modules_checked"])
         self.assertIn("bluez_security_state.py", report["offline_modules_checked"])
         self.assertIn("bluez_key_evidence.py", report["offline_modules_checked"])
+        self.assertIn("pairing_contracts.py", report["offline_modules_checked"])
 
 
 if __name__ == "__main__":

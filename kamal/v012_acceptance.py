@@ -43,6 +43,14 @@ from kamal.gatt_safety import (
     latch_unsafe_stop,
 )
 from kamal.report_validation import validate_report
+from kamal.pairing_contracts import (
+    PAIRING_CONTRACT_VERSION,
+    build_pairing_plan,
+)
+from kamal.pairing_executor import (
+    PAIRING_EXECUTOR_VERSION,
+    execute_pairing_plan,
+)
 from kamal.result_semantics import (
     RESULT_SEMANTICS_VERSION,
     build_effect_review,
@@ -72,6 +80,7 @@ _OFFLINE_MODULES = (
     "bluetooth_security.py",
     "bluez_security_state.py",
     "bluez_key_evidence.py",
+    "pairing_contracts.py",
     "evidence_contracts.py",
     "result_semantics.py",
 )
@@ -282,6 +291,108 @@ def _synthetic_active_report():
     }
     validate_report(report, "active_gatt")
     return report
+
+
+
+
+def _pairing_authorization():
+    return {
+        "schema_version": PAIRING_CONTRACT_VERSION,
+        "record_type": "bluetooth_pairing_authorization",
+        "authorization_id": "acceptance:pairing-auth:v0.12",
+        "engagement_id": "acceptance:v0.12",
+        "owner": "K'amal synthetic acceptance fixture",
+        "operator": "kamal-v012-acceptance",
+        "location": "synthetic offline backend",
+        "issued_at_utc": "2026-01-01T00:00:00Z",
+        "not_before_utc": "2026-01-01T00:00:00Z",
+        "expires_at_utc": "2099-01-01T00:00:00Z",
+        "target": {
+            "protocol": "ble",
+            "address": TARGET,
+            "address_type": "public",
+            "label": "synthetic pairing target",
+        },
+        "allowed_operations": ["pair_target", "establish_bond"],
+        "constraints": {
+            "max_attempts": 1,
+            "max_discovery_seconds": 5,
+            "max_pairing_seconds": 10,
+            "max_disconnect_seconds": 3,
+            "require_disconnect_after": True,
+            "require_unpaired_before": True,
+            "require_unbonded_before": True,
+            "allowed_agent_modes": ["no_input_no_output"],
+        },
+        "approval": {
+            "approver": "K'amal synthetic acceptance fixture",
+            "approved_at_utc": "2026-01-01T00:00:00Z",
+            "basis": "offline synthetic pairing acceptance only",
+        },
+    }
+
+
+def _pairing_request():
+    return {
+        "schema_version": PAIRING_CONTRACT_VERSION,
+        "record_type": "bluetooth_pairing_request",
+        "plan_id": "acceptance:pairing-plan:v0.12",
+        "pairing_session_id": "acceptance:pairing-session:v0.12",
+        "target": {"address": TARGET, "address_type": "public"},
+        "request_bond": True,
+        "agent_mode": "no_input_no_output",
+        "timeouts": {
+            "discovery_seconds": 2,
+            "pairing_seconds": 3,
+            "disconnect_seconds": 2,
+        },
+    }
+
+
+class _SyntheticPairingBackend:
+    """Injected pairing backend with no Bluetooth or D-Bus imports."""
+
+    def __init__(self):
+        self.state = {
+            "address": TARGET,
+            "address_type": "public",
+            "paired": False,
+            "bonded": False,
+            "trusted": False,
+            "connected": False,
+        }
+        self.pair_calls = 0
+        self.agent_events = []
+
+    def prepare(self):
+        return None
+
+    async def discover(self, address, adapter, timeout):
+        return SimpleNamespace(
+            address=address,
+            path="/synthetic/bluez/device",
+        )
+
+    async def get_state(self, _device):
+        return dict(self.state)
+
+    async def pair(self, _device, *, agent_mode, timeout):
+        self.pair_calls += 1
+        self.agent_events.append("synthetic_pair")
+        self.state.update(paired=True, bonded=True, connected=True)
+
+    async def cancel_pairing(self, _device):
+        return None
+
+    async def disconnect(self, _device, *, timeout):
+        self.state["connected"] = False
+        return True
+
+    async def stop_discovery(self):
+        return None
+
+    async def close(self):
+        return None
 
 
 def _catalog_payload():
@@ -543,6 +654,44 @@ def run_v012_acceptance(work_dir, *, repo_root=None):
     artifacts["write_result"] = _artifact_ref(root / "execution" / "operation-002.json")
     artifacts["run_final"] = _artifact_ref(root / "execution" / "run-final.json")
 
+    pairing_authorization = _pairing_authorization()
+    pairing_request = _pairing_request()
+    artifacts["pairing_authorization"] = _write_json(
+        root / "pairing-authorization.json", pairing_authorization
+    )
+    artifacts["pairing_request"] = _write_json(
+        root / "pairing-request.json", pairing_request
+    )
+    pairing_plan = build_pairing_plan(
+        pairing_authorization,
+        pairing_request,
+        authorization_sha256=artifacts["pairing_authorization"]["sha256"],
+        request_sha256=artifacts["pairing_request"]["sha256"],
+        created_at_utc=FIXED_UTC,
+    )
+    artifacts["pairing_plan"] = _write_json(
+        root / "pairing-plan.json", pairing_plan
+    )
+    pairing_backend = _SyntheticPairingBackend()
+    pairing_final = asyncio.run(
+        execute_pairing_plan(
+            pairing_plan,
+            pairing_authorization,
+            authorization_sha256=artifacts["pairing_authorization"]["sha256"],
+            plan_sha256=artifacts["pairing_plan"]["sha256"],
+            output_dir=root / "pairing-execution",
+            safety_state_dir=root / "pairing-safety",
+            adapter="synthetic0",
+            backend=pairing_backend,
+        )
+    )
+    artifacts["pairing_session"] = _artifact_ref(
+        root / "pairing-execution" / "pairing-session.json"
+    )
+    artifacts["pairing_run_final"] = _artifact_ref(
+        root / "pairing-execution" / "run-final.json"
+    )
+
     write_result = json.loads((root / "execution" / "operation-002.json").read_text())
     semantics = validate_operation_result(write_result)
     if semantics["protocol"]["state"] != "write_request_completed":
@@ -640,6 +789,9 @@ def run_v012_acceptance(work_dir, *, repo_root=None):
         "enrichment_hash_bound_to_assessment": enrichment["assessment_source"]["sha256"] == artifacts["assessment"]["sha256"],
         "bsam_no_pass_fail_inference": not bsam["summary"]["pass_fail_determinations_made"],
         "safety_interlock_clear_after_happy_path": not (root / "safety" / "active-run.json").exists() and not (root / "safety" / "unsafe-stop.json").exists(),
+        "synthetic_pairing_completed": bool(pairing_final["complete"]) and pairing_backend.pair_calls == 1,
+        "pairing_did_not_silently_trust_target": pairing_final["state_after"]["trusted"] is False,
+        "pairing_safety_interlock_clear_after_happy_path": not (root / "pairing-safety" / "active-run.json").exists() and not (root / "pairing-safety" / "unsafe-stop.json").exists(),
         **gates,
     }
     if not all(checks.values()):
@@ -660,6 +812,8 @@ def run_v012_acceptance(work_dir, *, repo_root=None):
             "evidence_contract": EVIDENCE_CONTRACT_VERSION,
             "active_contract": ACTIVE_CONTRACT_VERSION,
             "executor": EXECUTOR_VERSION,
+            "pairing_contract": PAIRING_CONTRACT_VERSION,
+            "pairing_executor": PAIRING_EXECUTOR_VERSION,
             "result_semantics": RESULT_SEMANTICS_VERSION,
             "safety_state": SAFETY_STATE_VERSION,
             "bsam_profile": BSAM_PROFILE_VERSION,

@@ -87,6 +87,39 @@ sudo .venv/bin/python bin/kamal-analyze-bluez-keys \
 
 The command reports that raw secrets were read transiently, but it never prints raw key values and never serializes them into the analytical JSON. The analyzer requires the selected BlueZ source file and its root/adapter/device directories to be access-restricted before it labels the source `os_protected_source`; group/other-accessible sources fail closed. Python does not provide a hard guarantee that every transient in-memory copy is immediately zeroized; encrypted K'amal-owned secret export/storage remains a separate future work package.
 
+## BLE-SEC-04: explicit pairing and bond execution
+
+BLE-SEC-04 introduces a dedicated pairing authorization and plan. It does not add
+`pair_target` or `establish_bond` to the existing GATT operation authorization.
+The planner is pure/no-RF; the executor is active RF and state-changing.
+
+The v0.12 authorization applies to one exact `public` or `random` BLE address,
+permits one attempt maximum, bounds discovery/pair/disconnect timeouts, requires
+post-run disconnect, and explicitly allowlists agent modes. `request_bond=true`
+requires separate `establish_bond` authorization.
+
+On Linux, K'amal maintains bounded live discovery to preserve the BlueZ Device1
+object and invokes `org.bluez.Device1.Pair` directly over D-Bus. It records
+`Paired`, `Bonded`, `Trusted`, and `Connected` independently and does not set
+`Trusted`. The real BlueZ backend refuses pair-only execution before RF because
+the Pair API cannot guarantee that pairing will avoid persistent bond state;
+therefore v0.12 BlueZ execution requires `request_bond=true`.
+
+The `no_input_no_output` mode registers an application-scoped BlueZ agent without
+requesting default-agent status. It accepts only the pairing-authorization
+callback, rejects PIN/passkey/display/numeric-confirmation callbacks and service
+authorization, and records only callback names. `external_default` leaves agent
+handling to an already configured BlueZ default agent. Agent capability is not
+used to infer the negotiated association model.
+
+Pairing reuses the existing persistent active-BLE safety lease, making it
+mutually exclusive with active GATT execution. Unconfirmed pairing cancellation,
+disconnect, scanner shutdown, or agent/D-Bus cleanup requires explicit safety
+recovery before subsequent active BLE work.
+
+See [explicit pairing executor](pairing-executor.md) for schemas, execution
+semantics and examples.
+
 ## Pairing session
 
 A `bluetooth_pairing_session` captures requested pair/bond behavior and evidence-limited before/after observations.
@@ -116,20 +149,22 @@ A `bluetooth_pairing_session` captures requested pair/bond behavior and evidence
     "paired_after": true,
     "bonded_after": true,
     "trusted_after": false,
-    "connected_after": true,
-    "encrypted_after": true
+    "connected_after": false,
+    "encrypted_after": null
   },
   "security": {
-    "authenticated": false,
-    "secure_connections": true,
-    "encryption_size": 16,
-    "association_model": "just_works"
+    "authenticated": null,
+    "secure_connections": null,
+    "encryption_size": null,
+    "association_model": null
   },
   "evidence": [
-    "artifact:bluez-mgmt",
-    "artifact:pairing-pcap"
+    "plan-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bluez-dbus:pre-pair-state",
+    "bluez-dbus:post-cleanup-state"
   ],
   "limitations": [
+    "SMP association model and Secure Connections require separate OTA evidence",
     "application authorization not assessed"
   ]
 }

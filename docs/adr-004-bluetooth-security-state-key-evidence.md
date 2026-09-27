@@ -1,8 +1,8 @@
 # ADR-004: Bluetooth security-state, pairing/bonding, and key-aware evidence contracts
 
-**Status:** Accepted for v0.12 contract design and incremental implementation. Pairing execution, raw-key export/copying into K'amal-owned storage, capture decryption, and RPA-resolution execution remain deferred to later BLE-SEC work packages.
+**Status:** Accepted for v0.12 contract design and incremental implementation. Explicit pairing/bond execution is implemented in BLE-SEC-04; raw-key export/copying into K'amal-owned storage, capture decryption, RPA-resolution execution, and bond removal/reset remain deferred.
 
-**Implementation status:** BLE-SEC-02 implements `inspect_security_state` for one exact target using BlueZ's existing filesystem cache/persistent store. BLE-SEC-03 implements local analysis of recognized 128-bit key material in an existing BlueZ persistent `info` record: raw values are read transiently, fingerprinted and analyzed in memory, but are not printed or copied into a second plaintext artifact. The original root-controlled `info` file is represented as an `os_protected_source`, while normal output contains `bluetooth_key_evidence`, fingerprints, safe metadata and limitations only. Live D-Bus/MGMT observation, pairing/bond execution, encrypted K'amal-owned key export, RPA resolution, and capture decryption remain later work packages.
+**Implementation status:** BLE-SEC-02 implements `inspect_security_state` for one exact target using BlueZ's existing filesystem cache/persistent store. BLE-SEC-03 implements local analysis of recognized 128-bit key material in an existing BlueZ persistent `info` record: raw values are read transiently, fingerprinted and analyzed in memory, but are not printed or copied into a second plaintext artifact. BLE-SEC-04 adds a separate exact-target pairing authorization/plan plus a bounded BlueZ executor using direct `Device1.Pair`; it records `Paired`, `Bonded`, and `Trusted` independently, never sets `Trusted`, and reuses the persistent active-BLE safety lease. Encrypted K'amal-owned key export, pairing OTA interpretation, RPA resolution, capture decryption, and bond removal/reset remain later work packages.
 
 ## Context
 
@@ -69,9 +69,13 @@ Pairing/security records use nullable booleans for observations that may be unav
 
 ### 5. Pairing and bonding are state-changing operations
 
-Future pairing execution must be explicit and authorization-gated. Bond persistence is represented separately from transient pairing state. Bond removal/reset is a separate state-mutating class and cannot be implied by successful pairing, test cleanup, or engagement teardown.
+Pairing execution is explicit and authorization-gated. BLE-SEC-04 uses a dedicated `bluetooth_pairing_authorization` rather than extending ordinary GATT authorization. The authorization is exact-target, permits only one attempt in v0.12, bounds discovery/pair/disconnect timeouts, requires post-run disconnect, and separately gates `pair_target` and `establish_bond`.
 
-A `bluetooth_pairing_session` records requested pair/bond behavior, before/after state observations, security metadata when supported, evidence references, and limitations. A completed/failed/cancelled session requires a completion timestamp.
+The BlueZ backend calls `org.bluez.Device1.Pair` directly instead of enabling Bleak's pairing convenience option, and it never sets `Trusted`. `Paired`, `Bonded`, and `Trusted` are observed independently. Because the BlueZ Pair API does not let K'amal guarantee a non-persistent pair-only outcome, the v0.12 BlueZ backend refuses a pair-only plan before RF; live BlueZ execution requires an explicitly authorized bond request. The pure contract retains pair-only semantics for a future backend that can guarantee them.
+
+Bond removal/reset remains a separate state-mutating class and cannot be implied by successful pairing, test cleanup, or engagement teardown.
+
+A `bluetooth_pairing_session` records requested pair/bond behavior, before/after state observations, security metadata when supported, evidence references, and limitations. A completed/failed/cancelled session requires a completion timestamp. BLE-SEC-04 leaves association model, Secure Connections, authentication, encryption size, and current link encryption unknown unless separate evidence establishes them.
 
 ### 6. Pairing/security semantics remain evidence-limited
 
@@ -106,23 +110,21 @@ BLE-SEC-01 reserves `resolve_rpa` as a local secret-using operation class. Later
 
 ## Consequences
 
-K'amal gains a stable vocabulary and strict data boundary before pairing or state mutation. BLE-SEC-03 may transiently read raw key values from an explicitly selected, operating-system-protected BlueZ source solely to derive redacted evidence; it does not widen GATT execution scope or create another plaintext key store. Future BLE-SEC work can implement BlueZ/MGMT collection, pairing, nRF capture, decryption, and RPA resolution without weakening the existing GATT planner or conflating evidence layers.
+K'amal gains a stable vocabulary and strict data boundary around security-state inspection, protected-key analysis, and pairing state mutation. BLE-SEC-03 may transiently read raw key values from an explicitly selected, operating-system-protected BlueZ source solely to derive redacted evidence; it does not create another plaintext key store. BLE-SEC-04 adds pairing without widening GATT authorization: pairing has its own contract/executor and shares only the persistent active-BLE safety lease. Future BLE-SEC work can add pairing OTA capture, decryption, and RPA resolution without conflating host-state and packet-evidence layers.
 
 The immediate cost is additional artifact types and secret-handling policy. Implementations must maintain two evidence paths: redacted analytical records suitable for ordinary reports and highly restricted secret-bearing artifacts suitable only for explicitly authorized local analysis.
 
-## Deferred implementation after BLE-SEC-03
+## Deferred implementation after BLE-SEC-04
 
 The following capabilities remain deferred:
 
-- call `BleakClient(..., pair=True)`;
-- invoke BlueZ pairing methods;
-- create/remove a bond;
+- call `BleakClient(..., pair=True)` as an implicit side effect of GATT work;
+- remove/reset a bond;
 - copy/export `/var/lib/bluetooth` key values into K'amal-owned plaintext or encrypted secret storage;
 - subscribe to BlueZ MGMT key events;
-- start the nRF sniffer;
+- interpret an OTA pairing capture as pairing/security evidence;
 - inject keys into Wireshark/TShark/nrfutil;
-- decrypt a capture;
-- resolve an RPA; or
-- modify the persistent GATT safety interlock.
+- decrypt a capture; or
+- resolve an RPA.
 
-Those capabilities require later work packages and hardware acceptance.
+The pairing executor is implemented, but live pairing remains subject to hardware acceptance with synchronized OTA capture. Those remaining capabilities require later work packages.

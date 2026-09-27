@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Execute one explicit, authorized Bluetooth pairing plan."""
+
+import argparse
+import asyncio
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from kamal.gatt_safety import SafetyInterlockError  # noqa: E402
+from kamal.pairing_contracts import PairingContractError  # noqa: E402
+from kamal.pairing_executor import (  # noqa: E402
+    PairingExecutionError,
+    execute_pairing_plan,
+    load_pairing_execution_inputs,
+)
+
+
+def parser():
+    result = argparse.ArgumentParser(
+        description=(
+            "Execute one exact Bluetooth pairing plan. Pairing is state-changing "
+            "and requires a separately validated pairing authorization."
+        )
+    )
+    result.add_argument("--plan", required=True, type=Path)
+    result.add_argument("--authorization", required=True, type=Path)
+    result.add_argument("--output-dir", required=True, type=Path)
+    result.add_argument(
+        "--safety-state-dir",
+        required=True,
+        type=Path,
+        help=(
+            "Shared active-BLE interlock directory. v0.12 pairing intentionally "
+            "reuses the GATT active-run/unsafe-stop lease for mutual exclusion."
+        ),
+    )
+    result.add_argument("--adapter", default="hci0")
+    return result
+
+
+async def async_main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        plan, plan_sha, _, auth, auth_sha, _ = load_pairing_execution_inputs(
+            args.plan, args.authorization
+        )
+        final = await execute_pairing_plan(
+            plan,
+            auth,
+            authorization_sha256=auth_sha,
+            plan_sha256=plan_sha,
+            output_dir=args.output_dir,
+            safety_state_dir=args.safety_state_dir,
+            adapter=args.adapter,
+        )
+    except (
+        OSError,
+        PairingContractError,
+        PairingExecutionError,
+        SafetyInterlockError,
+        ValueError,
+        TypeError,
+        KeyError,
+    ) as exc:
+        print(f"kamal-execute-pairing: {exc}", file=sys.stderr)
+        return 1
+
+    state = final["state_after"]
+    print(f"Bluetooth pairing execution complete: {args.output_dir}")
+    print(f"Paired: {state['paired']}")
+    print(f"Bonded: {state['bonded']}")
+    print(f"Trusted: {state['trusted']}")
+    print("No GATT characteristic operation was performed by this executor.")
+    return 0
+
+
+def main(argv=None):
+    return asyncio.run(async_main(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

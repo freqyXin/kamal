@@ -339,7 +339,7 @@ capture_ble_adv3() {
     local -A packet_count size_bytes sha256 ch37_count ch38_count ch39_count other_count
     local -A valid_ch37_count valid_ch38_count valid_ch39_count valid_other_count
     local -A mutation_count follow_request_count off_channel_count
-    local -A validated_off_channel_count untrusted_off_channel_count
+    local -A validated_on_channel_count validated_off_channel_count untrusted_off_channel_count
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -539,6 +539,7 @@ capture_ble_adv3() {
         mutation_count[$channel]=0
         follow_request_count[$channel]=0
         off_channel_count[$channel]=0
+        validated_on_channel_count[$channel]=0
         validated_off_channel_count[$channel]=0
         untrusted_off_channel_count[$channel]=0
 
@@ -591,21 +592,24 @@ capture_ble_adv3() {
 
         case "$channel" in
             37)
+                validated_on_channel_count[$channel]="${valid_ch37_count[$channel]}"
                 off_channel_count[$channel]=$((ch38_count[$channel] + ch39_count[$channel] + other_count[$channel]))
                 validated_off_channel_count[$channel]=$((valid_ch38_count[$channel] + valid_ch39_count[$channel] + valid_other_count[$channel]))
                 ;;
             38)
+                validated_on_channel_count[$channel]="${valid_ch38_count[$channel]}"
                 off_channel_count[$channel]=$((ch37_count[$channel] + ch39_count[$channel] + other_count[$channel]))
                 validated_off_channel_count[$channel]=$((valid_ch37_count[$channel] + valid_ch39_count[$channel] + valid_other_count[$channel]))
                 ;;
             39)
+                validated_on_channel_count[$channel]="${valid_ch39_count[$channel]}"
                 off_channel_count[$channel]=$((ch37_count[$channel] + ch38_count[$channel] + other_count[$channel]))
                 validated_off_channel_count[$channel]=$((valid_ch37_count[$channel] + valid_ch38_count[$channel] + valid_other_count[$channel]))
                 ;;
         esac
         untrusted_off_channel_count[$channel]=$((off_channel_count[$channel] - validated_off_channel_count[$channel]))
 
-        if (( mutation_count[$channel] != 1 || follow_request_count[$channel] != 1 || validated_off_channel_count[$channel] != 0 )); then
+        if (( mutation_count[$channel] != 1 || follow_request_count[$channel] != 1 || validated_on_channel_count[$channel] <= 0 || validated_off_channel_count[$channel] != 0 )); then
             [[ "$overall_status" != "ok" ]] || overall_status="channel-validation-failed"
         fi
     done
@@ -713,9 +717,9 @@ PY
 
     printf '\nThree-channel BLE advertising capture complete.\n\n'
     for channel in "${channels[@]}"; do
-        printf 'CH%s packets: %-8s off-channel(valid): %-5s untrusted: %-5s SHA256: %s\n' \
-            "$channel" "${packet_count[$channel]}" "${validated_off_channel_count[$channel]}" \
-            "${untrusted_off_channel_count[$channel]}" "${sha256[$channel]:-unavailable}"
+        printf 'CH%s packets: %-8s on-channel(valid): %-5s off-channel(valid): %-5s untrusted: %-5s SHA256: %s\n' \
+            "$channel" "${packet_count[$channel]}" "${validated_on_channel_count[$channel]}" \
+            "${validated_off_channel_count[$channel]}" "${untrusted_off_channel_count[$channel]}" "${sha256[$channel]:-unavailable}"
     done
     printf 'Manifest: %s\n' "$manifest"
     printf 'Status:   %s\n' "$overall_status"

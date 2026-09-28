@@ -128,6 +128,21 @@ class CaptureWrapperTests(unittest.TestCase):
             "follow_request_count[$channel] != 1 || off_channel_count[$channel] != 0",
             source,
         )
+        self.assertIn("validated_on_channel_count[$channel]", source)
+        self.assertIn("validated_on_channel_count[$channel] <= 0", source)
+        self.assertIn(
+            'validated_on_channel_count[$channel]="${valid_ch37_count[$channel]}"',
+            source,
+        )
+        self.assertIn(
+            'validated_on_channel_count[$channel]="${valid_ch38_count[$channel]}"',
+            source,
+        )
+        self.assertIn(
+            'validated_on_channel_count[$channel]="${valid_ch39_count[$channel]}"',
+            source,
+        )
+        self.assertIn("on-channel(valid)", source)
         self.assertIn('"validated_channel_counts": validated_counts', source)
         self.assertIn(
             '"validated_off_channel_packets": validated_off_channel',

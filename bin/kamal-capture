@@ -337,7 +337,9 @@ capture_ble_adv3() {
     local -a channels=(37 38 39)
     local -A device port serial pid ready meta pcap stdout_file stderr_file stop_rc
     local -A packet_count size_bytes sha256 ch37_count ch38_count ch39_count other_count
+    local -A valid_ch37_count valid_ch38_count valid_ch39_count valid_other_count
     local -A mutation_count follow_request_count off_channel_count
+    local -A validated_off_channel_count untrusted_off_channel_count
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -530,9 +532,15 @@ capture_ble_adv3() {
         ch38_count[$channel]=0
         ch39_count[$channel]=0
         other_count[$channel]=0
+        valid_ch37_count[$channel]=0
+        valid_ch38_count[$channel]=0
+        valid_ch39_count[$channel]=0
+        valid_other_count[$channel]=0
         mutation_count[$channel]=0
         follow_request_count[$channel]=0
         off_channel_count[$channel]=0
+        validated_off_channel_count[$channel]=0
+        untrusted_off_channel_count[$channel]=0
 
         if [[ ! -s "${pcap[$channel]}" ]]; then
             [[ "$overall_status" != "ok" ]] || overall_status="capture-missing"
@@ -548,16 +556,29 @@ capture_ble_adv3() {
         size_bytes[$channel]="$(stat -c '%s' "${pcap[$channel]}")"
         sha256[$channel]="$(sha256sum "${pcap[$channel]}" | awk '{print $1}')"
 
-        read -r ch37_count[$channel] ch38_count[$channel] ch39_count[$channel] other_count[$channel] < <(
-            tshark -r "${pcap[$channel]}" -T fields -e nordic_ble.channel 2>/dev/null |
+        read -r             ch37_count[$channel] ch38_count[$channel] ch39_count[$channel] other_count[$channel]             valid_ch37_count[$channel] valid_ch38_count[$channel] valid_ch39_count[$channel] valid_other_count[$channel] < <(
+            tshark -r "${pcap[$channel]}" -T fields                 -e nordic_ble.channel -e nordic_ble.crcok 2>/dev/null |
             awk '
               NF {
-                if ($1 == 37) c37++;
-                else if ($1 == 38) c38++;
-                else if ($1 == 39) c39++;
+                channel=$1
+                crcok=$2
+
+                if (channel == 37) c37++;
+                else if (channel == 38) c38++;
+                else if (channel == 39) c39++;
                 else other++;
+
+                if (crcok == "True" || crcok == "1") {
+                    if (channel == 37) valid37++;
+                    else if (channel == 38) valid38++;
+                    else if (channel == 39) valid39++;
+                    else valid_other++;
+                }
               }
-              END { print c37+0, c38+0, c39+0, other+0 }
+              END {
+                print c37+0, c38+0, c39+0, other+0,
+                      valid37+0, valid38+0, valid39+0, valid_other+0
+              }
             '
         )
 
@@ -569,12 +590,22 @@ capture_ble_adv3() {
         fi
 
         case "$channel" in
-            37) off_channel_count[$channel]=$((ch38_count[$channel] + ch39_count[$channel] + other_count[$channel])) ;;
-            38) off_channel_count[$channel]=$((ch37_count[$channel] + ch39_count[$channel] + other_count[$channel])) ;;
-            39) off_channel_count[$channel]=$((ch37_count[$channel] + ch38_count[$channel] + other_count[$channel])) ;;
+            37)
+                off_channel_count[$channel]=$((ch38_count[$channel] + ch39_count[$channel] + other_count[$channel]))
+                validated_off_channel_count[$channel]=$((valid_ch38_count[$channel] + valid_ch39_count[$channel] + valid_other_count[$channel]))
+                ;;
+            38)
+                off_channel_count[$channel]=$((ch37_count[$channel] + ch39_count[$channel] + other_count[$channel]))
+                validated_off_channel_count[$channel]=$((valid_ch37_count[$channel] + valid_ch39_count[$channel] + valid_other_count[$channel]))
+                ;;
+            39)
+                off_channel_count[$channel]=$((ch37_count[$channel] + ch38_count[$channel] + other_count[$channel]))
+                validated_off_channel_count[$channel]=$((valid_ch37_count[$channel] + valid_ch38_count[$channel] + valid_other_count[$channel]))
+                ;;
         esac
+        untrusted_off_channel_count[$channel]=$((off_channel_count[$channel] - validated_off_channel_count[$channel]))
 
-        if (( mutation_count[$channel] != 1 || follow_request_count[$channel] != 1 || off_channel_count[$channel] != 0 )); then
+        if (( mutation_count[$channel] != 1 || follow_request_count[$channel] != 1 || validated_off_channel_count[$channel] != 0 )); then
             [[ "$overall_status" != "ok" ]] || overall_status="channel-validation-failed"
         fi
     done
@@ -582,9 +613,9 @@ capture_ble_adv3() {
     python3 - \
         "$manifest" "$hostname" "$start_time" "$end_time" "$duration" "${steady_wall_duration:-0}" \
         "$target_address" "$overall_status" "$FIXED_ADV_PRELOAD" \
-        "${device[37]}" "${port[37]}" "${serial[37]}" "${pcap[37]}" "${packet_count[37]}" "${size_bytes[37]}" "${sha256[37]}" "${ch37_count[37]}" "${ch38_count[37]}" "${ch39_count[37]}" "${other_count[37]}" "${mutation_count[37]}" "${follow_request_count[37]}" "${stop_rc[37]}" \
-        "${device[38]}" "${port[38]}" "${serial[38]}" "${pcap[38]}" "${packet_count[38]}" "${size_bytes[38]}" "${sha256[38]}" "${ch37_count[38]}" "${ch38_count[38]}" "${ch39_count[38]}" "${other_count[38]}" "${mutation_count[38]}" "${follow_request_count[38]}" "${stop_rc[38]}" \
-        "${device[39]}" "${port[39]}" "${serial[39]}" "${pcap[39]}" "${packet_count[39]}" "${size_bytes[39]}" "${sha256[39]}" "${ch37_count[39]}" "${ch38_count[39]}" "${ch39_count[39]}" "${other_count[39]}" "${mutation_count[39]}" "${follow_request_count[39]}" "${stop_rc[39]}" <<'PY'
+        "${device[37]}" "${port[37]}" "${serial[37]}" "${pcap[37]}" "${packet_count[37]}" "${size_bytes[37]}" "${sha256[37]}" "${ch37_count[37]}" "${ch38_count[37]}" "${ch39_count[37]}" "${other_count[37]}" "${valid_ch37_count[37]}" "${valid_ch38_count[37]}" "${valid_ch39_count[37]}" "${valid_other_count[37]}" "${mutation_count[37]}" "${follow_request_count[37]}" "${stop_rc[37]}" \
+        "${device[38]}" "${port[38]}" "${serial[38]}" "${pcap[38]}" "${packet_count[38]}" "${size_bytes[38]}" "${sha256[38]}" "${ch37_count[38]}" "${ch38_count[38]}" "${ch39_count[38]}" "${other_count[38]}" "${valid_ch37_count[38]}" "${valid_ch38_count[38]}" "${valid_ch39_count[38]}" "${valid_other_count[38]}" "${mutation_count[38]}" "${follow_request_count[38]}" "${stop_rc[38]}" \
+        "${device[39]}" "${port[39]}" "${serial[39]}" "${pcap[39]}" "${packet_count[39]}" "${size_bytes[39]}" "${sha256[39]}" "${ch37_count[39]}" "${ch38_count[39]}" "${ch39_count[39]}" "${other_count[39]}" "${valid_ch37_count[39]}" "${valid_ch38_count[39]}" "${valid_ch39_count[39]}" "${valid_other_count[39]}" "${mutation_count[39]}" "${follow_request_count[39]}" "${stop_rc[39]}" <<'PY'
 import json
 import os
 import sys
@@ -615,11 +646,21 @@ for channel in (37, 38, 39):
         "39": int(next(args)),
         "other": int(next(args)),
     }
+    validated_counts = {
+        "37": int(next(args)),
+        "38": int(next(args)),
+        "39": int(next(args)),
+        "other": int(next(args)),
+    }
     mutations = int(next(args))
     follow_requests = int(next(args)
     )
     stop_rc = next(args)
     off_channel = sum(value for key, value in counts.items() if key != str(channel))
+    validated_off_channel = sum(
+        value for key, value in validated_counts.items() if key != str(channel)
+    )
+    untrusted_off_channel = off_channel - validated_off_channel
     radios.append({
         "channel": channel,
         "device": device,
@@ -631,7 +672,11 @@ for channel in (37, 38, 39):
             "size_bytes": size,
             "sha256": digest,
             "channel_counts": counts,
+            "validated_channel_counts": validated_counts,
             "off_channel_packets": off_channel,
+            "validated_off_channel_packets": validated_off_channel,
+            "untrusted_off_channel_packets": untrusted_off_channel,
+            "channel_validation_basis": "nordic_ble.crcok == True",
         },
         "adapter": {
             "hop_sequence_mutations": mutations,
@@ -668,8 +713,9 @@ PY
 
     printf '\nThree-channel BLE advertising capture complete.\n\n'
     for channel in "${channels[@]}"; do
-        printf 'CH%s packets: %-8s off-channel: %-5s SHA256: %s\n' \
-            "$channel" "${packet_count[$channel]}" "${off_channel_count[$channel]}" "${sha256[$channel]:-unavailable}"
+        printf 'CH%s packets: %-8s off-channel(valid): %-5s untrusted: %-5s SHA256: %s\n' \
+            "$channel" "${packet_count[$channel]}" "${validated_off_channel_count[$channel]}" \
+            "${untrusted_off_channel_count[$channel]}" "${sha256[$channel]:-unavailable}"
     done
     printf 'Manifest: %s\n' "$manifest"
     printf 'Status:   %s\n' "$overall_status"

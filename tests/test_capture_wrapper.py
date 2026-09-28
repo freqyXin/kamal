@@ -116,6 +116,32 @@ class CaptureWrapperTests(unittest.TestCase):
         self.assertIn('mutation_count[$channel] != 1', source)
         self.assertIn('follow_request_count[$channel] != 1', source)
 
+    def test_three_channel_validation_uses_crc_valid_channel_observations(self):
+        source = CAPTURE.read_text(encoding="utf-8")
+        self.assertIn("-e nordic_ble.crcok", source)
+        self.assertIn("validated_off_channel_count[$channel]", source)
+        self.assertIn(
+            "validated_off_channel_count[$channel] != 0",
+            source,
+        )
+        self.assertNotIn(
+            "follow_request_count[$channel] != 1 || off_channel_count[$channel] != 0",
+            source,
+        )
+        self.assertIn('"validated_channel_counts": validated_counts', source)
+        self.assertIn(
+            '"validated_off_channel_packets": validated_off_channel',
+            source,
+        )
+        self.assertIn(
+            '"untrusted_off_channel_packets": untrusted_off_channel',
+            source,
+        )
+        self.assertIn(
+            '"channel_validation_basis": "nordic_ble.crcok == True"',
+            source,
+        )
+
     def test_ble_setup_requires_explicit_assignment_when_more_than_three_radios_exist(self):
         source = SETUP.read_text(encoding="utf-8")
         self.assertIn('KAMAL_BLE_ADV37_SERIAL', source)

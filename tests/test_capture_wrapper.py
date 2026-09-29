@@ -118,7 +118,7 @@ class CaptureWrapperTests(unittest.TestCase):
 
     def test_three_channel_validation_uses_crc_valid_channel_observations(self):
         source = CAPTURE.read_text(encoding="utf-8")
-        self.assertIn("-e nordic_ble.crcok", source)
+        self.assertIn('"-e", "nordic_ble.crcok"', source)
         self.assertIn("validated_off_channel_count[$channel]", source)
         self.assertIn(
             "validated_off_channel_count[$channel] != 0",
@@ -131,18 +131,18 @@ class CaptureWrapperTests(unittest.TestCase):
         self.assertIn("validated_on_channel_count[$channel]", source)
         self.assertIn("validated_on_channel_count[$channel] <= 0", source)
         self.assertIn(
-            'validated_on_channel_count[$channel]="${valid_ch37_count[$channel]}"',
+            'validated_on_channel_count[$channel]="${steady_valid_ch37_count[$channel]}"',
             source,
         )
         self.assertIn(
-            'validated_on_channel_count[$channel]="${valid_ch38_count[$channel]}"',
+            'validated_on_channel_count[$channel]="${steady_valid_ch38_count[$channel]}"',
             source,
         )
         self.assertIn(
-            'validated_on_channel_count[$channel]="${valid_ch39_count[$channel]}"',
+            'validated_on_channel_count[$channel]="${steady_valid_ch39_count[$channel]}"',
             source,
         )
-        self.assertIn("on-channel(valid)", source)
+        self.assertIn("on-channel(valid,steady)", source)
         self.assertIn('"validated_channel_counts": validated_counts', source)
         self.assertIn(
             '"validated_off_channel_packets": validated_off_channel',
@@ -153,8 +153,128 @@ class CaptureWrapperTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            '"channel_validation_basis": "nordic_ble.crcok == True"',
+            '"channel_validation_basis": "steady interval && nordic_ble.crcok == True"',
             source,
+        )
+
+    def test_three_channel_validation_is_bounded_to_steady_interval(self):
+        source = CAPTURE.read_text(encoding="utf-8")
+        self.assertIn('steady_start_epoch="$(date +%s.%N)"', source)
+        self.assertIn('steady_end_epoch="$(date +%s.%N)"', source)
+        self.assertIn('"-e", "frame.time_epoch"', source)
+        self.assertIn("from decimal import Decimal, InvalidOperation", source)
+        self.assertIn("steady_start <= epoch <= steady_end", source)
+        self.assertIn("steady_valid_ch37_count", source)
+        self.assertIn("steady_valid_ch38_count", source)
+        self.assertIn("steady_valid_ch39_count", source)
+        self.assertIn("crc_valid_off_channel_count", source)
+        self.assertIn(
+            'untrusted_off_channel_count[$channel]=$((off_channel_count[$channel] - crc_valid_off_channel_count[$channel]))',
+            source,
+        )
+        self.assertIn('"crc_valid_channel_counts": crc_valid_counts', source)
+        self.assertIn('"validated_channel_counts": validated_counts', source)
+        self.assertIn(
+            '"whole_capture_crc_valid_off_channel_packets": crc_valid_off_channel',
+            source,
+        )
+        self.assertIn('"steady_start_epoch": steady_start_epoch', source)
+        self.assertIn('"steady_end_epoch": steady_end_epoch', source)
+        self.assertIn(
+            '"channel_validation_basis": "steady interval && nordic_ble.crcok == True"',
+            source,
+        )
+        self.assertNotIn(
+            'validated_on_channel_count[$channel]="${valid_ch39_count[$channel]}"',
+            source,
+        )
+
+    def test_steady_window_counter_excludes_startup_but_retains_in_window_off_channel(self):
+        import contextlib
+        import io
+
+        source = CAPTURE.read_text(encoding="utf-8")
+        script_start = source.index("from decimal import Decimal, InvalidOperation\n")
+        script_end = source.index("\nPY\n        )", script_start)
+        counter_script = source[script_start:script_end]
+
+        subprocess_call = (
+            "proc = subprocess.run(cmd, capture_output=True, text=True, check=False)"
+        )
+        self.assertEqual(counter_script.count(subprocess_call), 1)
+        counter_script = counter_script.replace(
+            subprocess_call,
+            "proc = _fake_run(cmd, capture_output=True, text=True, check=False)",
+            1,
+        )
+
+        def run_counter(rows):
+            class FakeProc:
+                returncode = 0
+                stderr = ""
+
+                def __init__(self, stdout):
+                    self.stdout = stdout
+
+            def fake_run(cmd, capture_output=True, text=True, check=False):
+                self.assertEqual(cmd[0], "tshark")
+                self.assertIn("frame.time_epoch", cmd)
+                self.assertIn("nordic_ble.channel", cmd)
+                self.assertIn("nordic_ble.crcok", cmd)
+                return FakeProc(rows)
+
+            old_argv = sys.argv
+            output = io.StringIO()
+            try:
+                sys.argv = [
+                    "steady-window-counter",
+                    "fixture.pcap",
+                    "100.000000000",
+                    "200.000000000",
+                ]
+                with contextlib.redirect_stdout(output):
+                    exec(
+                        compile(counter_script, "<steady-window-counter>", "exec"),
+                        {
+                            "__name__": "__steady_window_counter_test__",
+                            "_fake_run": fake_run,
+                        },
+                    )
+            finally:
+                sys.argv = old_argv
+
+            return [int(value) for value in output.getvalue().split()]
+
+        startup_only = run_counter(
+            "90.000000000\t37\tTrue\n"
+            "95.000000000\t38\tTrue\n"
+            "110.000000000\t39\tTrue\n"
+            "150.000000000\t39\tFalse\n"
+            "210.000000000\t37\tTrue\n"
+        )
+        self.assertEqual(
+            startup_only,
+            [2, 1, 2, 0, 2, 1, 1, 0, 0, 0, 1, 0],
+        )
+        steady_valid = startup_only[8:12]
+        self.assertEqual(steady_valid[2], 1)
+        self.assertEqual(
+            steady_valid[0] + steady_valid[1] + steady_valid[3],
+            0,
+        )
+
+        in_window_off_channel = run_counter(
+            "90.000000000\t37\tTrue\n"
+            "95.000000000\t38\tTrue\n"
+            "110.000000000\t39\tTrue\n"
+            "120.000000000\t38\tTrue\n"
+            "150.000000000\t39\tFalse\n"
+        )
+        steady_valid = in_window_off_channel[8:12]
+        self.assertEqual(steady_valid[2], 1)
+        self.assertEqual(
+            steady_valid[0] + steady_valid[1] + steady_valid[3],
+            1,
         )
 
     def test_ble_setup_requires_explicit_assignment_when_more_than_three_radios_exist(self):

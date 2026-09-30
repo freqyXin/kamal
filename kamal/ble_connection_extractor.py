@@ -19,6 +19,12 @@ from kamal.ble_connection_context import (
     LEGACY_CONNECT_IND_PDU_TYPE,
     parse_legacy_connect_ind,
 )
+from kamal.ble_nordic_sidecar import (
+    BLENordicSidecarError,
+    load_nordic_connect_req_sidecar,
+    reconcile_connect_ind_fields,
+    verify_nordic_connect_req_sidecar_unchanged,
+)
 
 
 BLE_CONNECTION_EXTRACTION_VERSION = "0.12.0"
@@ -102,6 +108,7 @@ def extract_legacy_connect_ind_report(
     *,
     tshark="tshark",
     runner=None,
+    nordic_control_log=None,
 ):
     """Extract contract-grade legacy CONNECT_IND records from one existing PCAP.
 
@@ -132,6 +139,13 @@ def extract_legacy_connect_ind_report(
     sha_before = _sha256_file(source)
     decoder_version = _tshark_version(runner, tshark)
 
+    sidecar = None
+    if nordic_control_log is not None:
+        try:
+            sidecar = load_nordic_connect_req_sidecar(nordic_control_log)
+        except BLENordicSidecarError as exc:
+            raise BLEConnectionExtractionError(str(exc)) from exc
+
     result = _run_tshark(
         runner,
         _candidate_command(tshark, source),
@@ -140,6 +154,7 @@ def extract_legacy_connect_ind_report(
     accepted = []
     rejected = []
     candidate_count = 0
+    reconciled_count = 0
 
     for raw_line in (result.stdout or "").splitlines():
         if not raw_line:
@@ -171,13 +186,42 @@ def extract_legacy_connect_ind_report(
                 source_capture_sha256=sha_before,
             )
         except BLEConnectionContextError as exc:
-            rejected.append(
-                {
-                    "frame_number": frame_number or None,
-                    "reason": str(exc),
-                }
-            )
-            continue
+            original_reason = str(exc)
+            if sidecar is None:
+                rejected.append(
+                    {
+                        "frame_number": frame_number or None,
+                        "reason": original_reason,
+                    }
+                )
+                continue
+
+            try:
+                reconciled_fields, reconciliation = reconcile_connect_ind_fields(
+                    fields,
+                    sidecar["records"],
+                )
+                record = parse_legacy_connect_ind(
+                    reconciled_fields,
+                    source_capture_path=str(source),
+                    source_capture_sha256=sha_before,
+                )
+            except (BLEConnectionContextError, BLENordicSidecarError) as reconcile_exc:
+                rejected.append(
+                    {
+                        "frame_number": frame_number or None,
+                        "reason": (
+                            f"{original_reason}; Nordic sidecar reconciliation "
+                            f"failed: {reconcile_exc}"
+                        ),
+                    }
+                )
+                continue
+
+            reconciliation["source"] = dict(sidecar["source"])
+            reconciliation["pcap_rejection_reason"] = original_reason
+            record["evidence_reconciliation"] = reconciliation
+            reconciled_count += 1
 
         accepted.append(record)
 
@@ -187,6 +231,12 @@ def extract_legacy_connect_ind_report(
         raise BLEConnectionExtractionError(
             "Source capture changed during extraction; no report is trustworthy"
         )
+
+    if sidecar is not None:
+        try:
+            verify_nordic_connect_req_sidecar_unchanged(sidecar)
+        except BLENordicSidecarError as exc:
+            raise BLEConnectionExtractionError(str(exc)) from exc
 
     return {
         "schema_version": BLE_CONNECTION_EXTRACTION_VERSION,
@@ -207,6 +257,12 @@ def extract_legacy_connect_ind_report(
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
         },
+        "reconciliation": {
+            "accepted_via_nordic_sidecar_count": reconciled_count,
+        },
+        "supplemental_sources": (
+            [] if sidecar is None else [dict(sidecar["source"])]
+        ),
         "connection_contexts": accepted,
         "rejected_candidates": rejected,
         "execution": {

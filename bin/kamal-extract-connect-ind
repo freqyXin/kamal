@@ -30,6 +30,14 @@ def parser():
         default="tshark",
         help="TShark executable/path (default: tshark)",
     )
+    result.add_argument(
+        "--nordic-control-log",
+        type=Path,
+        help=(
+            "Optional retained nRF Util extcap control log containing Nordic's "
+            "native CONNECT_REQ decode for explicit field reconciliation"
+        ),
+    )
     return result
 
 
@@ -44,9 +52,12 @@ def main(argv=None):
         return 1
 
     try:
+        extract_kwargs = {"tshark": args.tshark}
+        if args.nordic_control_log is not None:
+            extract_kwargs["nordic_control_log"] = args.nordic_control_log
         report = extract_legacy_connect_ind_report(
             args.pcap,
-            tshark=args.tshark,
+            **extract_kwargs,
         )
         atomic_create_json(args.json, report)
     except AtomicCreateError as exc:

@@ -12,9 +12,23 @@ from kamal.ble_nordic_sidecar import (
 )
 
 
-def control_line(*, access_address=1348823646, timestamp="1790738821.304500"):
+def control_line(
+    *,
+    access_address=1348823646,
+    timestamp="1790738821.304500",
+    packet_counter=None,
+):
+    packet_header = (
+        ""
+        if packet_counter is None
+        else (
+            "Packet { header: Header { id: PacketId(2), "
+            f"packet_counter: {packet_counter}, protocol_version: VersionX(3) }}, "
+        )
+    )
     return (
         f"{timestamp}\tT\tcontrol=0\tcommand=2\tdata="
+        f"{packet_header}"
         "BleRadioPacket { header: EventAdvertising, payload: ConnectReq("
         "ConnectReqPayload { adv_type: ADV_TYPE_CONNECT_REQ, "
         "initiator_address: BleAddress(88:a2:9e:c6:e9:9 public), "
@@ -29,6 +43,7 @@ def control_line(*, access_address=1348823646, timestamp="1790738821.304500"):
 def pcap_fields():
     return {
         "frame.time_epoch": "1790738821.304145000",
+        "nordic_ble.packet_counter": "",
         "btle.initiator_address": "88:a2:9e:c6:e9:09",
         "btle.advertising_address": "00:1c:4d:45:de:3f",
         "btle.advertising_header.randomized_tx": "False",
@@ -65,6 +80,95 @@ class BLENordicSidecarTests(unittest.TestCase):
         self.assertEqual(record["channel_map_hex"], "ffffffff1f")
         self.assertEqual(record["hop_increment"], 8)
         self.assertEqual(record["sleep_clock_accuracy_code"], 1)
+
+    def test_loads_native_packet_counter_when_present(self):
+        self.path.write_text(
+            control_line(packet_counter=21471),
+            encoding="utf-8",
+        )
+        sidecar = load_nordic_connect_req_sidecar(self.path)
+
+        self.assertEqual(sidecar["records"][0]["packet_counter"], 21471)
+
+    def test_packet_counter_binds_same_packet_despite_large_timestamp_delta(self):
+        self.path.write_text(
+            control_line(
+                timestamp="1790836521.216527",
+                packet_counter=58359,
+            ),
+            encoding="utf-8",
+        )
+        fields = pcap_fields()
+        fields["frame.time_epoch"] = "1790836536.112556000"
+        fields["nordic_ble.packet_counter"] = "58359"
+        sidecar = load_nordic_connect_req_sidecar(self.path)
+
+        reconciled, metadata = reconcile_connect_ind_fields(
+            fields,
+            sidecar["records"],
+        )
+
+        self.assertEqual(
+            reconciled["btle.link_layer_data.channel_map"],
+            "ffffffff1f",
+        )
+        self.assertEqual(
+            metadata["source_record"]["match_method"],
+            "packet_counter",
+        )
+        self.assertEqual(
+            metadata["source_record"]["packet_counter"],
+            58359,
+        )
+        self.assertEqual(
+            metadata["source_record"]["pcap_packet_counter"],
+            58359,
+        )
+        self.assertEqual(
+            metadata["source_record"]["match_time_delta_seconds"],
+            "14.896029000",
+        )
+        self.assertIn(
+            "nordic_packet_counter",
+            metadata["matched_fields"],
+        )
+
+    def test_packet_counter_mismatch_fails_closed_even_when_timestamp_is_close(self):
+        self.path.write_text(
+            control_line(packet_counter=58359),
+            encoding="utf-8",
+        )
+        fields = pcap_fields()
+        fields["nordic_ble.packet_counter"] = "58360"
+        sidecar = load_nordic_connect_req_sidecar(self.path)
+
+        with self.assertRaisesRegex(
+            BLENordicSidecarError,
+            "packet-counter match",
+        ):
+            reconcile_connect_ind_fields(fields, sidecar["records"])
+
+    def test_duplicate_packet_counter_match_fails_closed(self):
+        self.path.write_text(
+            control_line(
+                timestamp="1790738821.304400",
+                packet_counter=58359,
+            )
+            + control_line(
+                timestamp="1790738821.304600",
+                packet_counter=58359,
+            ),
+            encoding="utf-8",
+        )
+        fields = pcap_fields()
+        fields["nordic_ble.packet_counter"] = "58359"
+        sidecar = load_nordic_connect_req_sidecar(self.path)
+
+        with self.assertRaisesRegex(
+            BLENordicSidecarError,
+            "packet-counter match is ambiguous",
+        ):
+            reconcile_connect_ind_fields(fields, sidecar["records"])
 
     def test_rejects_malformed_native_address(self):
         self.path.write_text(
@@ -105,6 +209,10 @@ class BLENordicSidecarTests(unittest.TestCase):
         self.assertEqual(
             metadata["status"],
             "nordic_native_sidecar_reconciliation",
+        )
+        self.assertEqual(
+            metadata["source_record"]["match_method"],
+            "timestamp",
         )
         self.assertEqual(
             set(metadata["supplemented_fields"]),

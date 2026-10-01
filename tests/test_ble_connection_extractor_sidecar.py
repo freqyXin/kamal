@@ -6,7 +6,10 @@ import unittest
 from pathlib import Path
 
 from kamal.ble_connection_context import CONNECT_IND_TSHARK_FIELDS
-from kamal.ble_connection_extractor import extract_legacy_connect_ind_report
+from kamal.ble_connection_extractor import (
+    CONNECT_IND_EXTRACTOR_TSHARK_FIELDS,
+    extract_legacy_connect_ind_report,
+)
 
 
 def fields():
@@ -15,6 +18,7 @@ def fields():
         "frame.time_epoch": "1790738821.304145000",
         "nordic_ble.channel": "39",
         "nordic_ble.crcok": "True",
+        "nordic_ble.packet_counter": "21471",
         "btle.advertising_header.pdu_type": "0x05",
         "btle.advertising_header.randomized_tx": "False",
         "btle.advertising_header.randomized_rx": "False",
@@ -34,13 +38,15 @@ def fields():
     }
 
 
-def row(values):
-    return "\t".join(values.get(name, "") for name in CONNECT_IND_TSHARK_FIELDS)
+def row(values, field_names=CONNECT_IND_EXTRACTOR_TSHARK_FIELDS):
+    return "\t".join(values.get(name, "") for name in field_names)
 
 
-def control_line(*, access_address=1348823646):
+def control_line(*, access_address=1348823646, packet_counter=21471):
     return (
         "1790738821.304500\tT\tcontrol=0\tcommand=2\tdata="
+        "Packet { header: Header { id: PacketId(2), "
+        f"packet_counter: {packet_counter}, protocol_version: VersionX(3) }}, "
         "BleRadioPacket { header: EventAdvertising, payload: ConnectReq("
         "ConnectReqPayload { adv_type: ADV_TYPE_CONNECT_REQ, "
         "initiator_address: BleAddress(88:a2:9e:c6:e9:09 public), "
@@ -87,7 +93,9 @@ class BLEConnectionExtractorSidecarTests(unittest.TestCase):
         report = extract_legacy_connect_ind_report(
             self.pcap,
             tshark="/usr/bin/tshark",
-            runner=self.runner,
+            runner=FakeRunner(
+                row(fields(), CONNECT_IND_TSHARK_FIELDS) + "\n"
+            ),
         )
 
         self.assertEqual(report["summary"]["accepted_count"], 0)
@@ -124,6 +132,18 @@ class BLEConnectionExtractorSidecarTests(unittest.TestCase):
             reconciliation["status"],
             "nordic_native_sidecar_reconciliation",
         )
+        self.assertEqual(
+            reconciliation["source_record"]["match_method"],
+            "packet_counter",
+        )
+        self.assertEqual(
+            reconciliation["source_record"]["packet_counter"],
+            21471,
+        )
+        self.assertEqual(
+            reconciliation["source_record"]["pcap_packet_counter"],
+            21471,
+        )
         self.assertIn(
             "range 5..16",
             reconciliation["pcap_rejection_reason"],
@@ -131,6 +151,29 @@ class BLEConnectionExtractorSidecarTests(unittest.TestCase):
         self.assertEqual(
             reconciliation["source"]["sha256"],
             report["supplemental_sources"][0]["sha256"],
+        )
+
+    def test_packet_counter_reconciles_when_pcap_timestamp_is_shifted(self):
+        shifted = fields()
+        shifted["frame.time_epoch"] = "1790738836.200529000"
+        self.runner = FakeRunner(row(shifted) + "\n")
+
+        report = extract_legacy_connect_ind_report(
+            self.pcap,
+            tshark="/usr/bin/tshark",
+            runner=self.runner,
+            nordic_control_log=self.control,
+        )
+
+        self.assertEqual(report["summary"]["accepted_count"], 1)
+        reconciliation = report["connection_contexts"][0]["evidence_reconciliation"]
+        self.assertEqual(
+            reconciliation["source_record"]["match_method"],
+            "packet_counter",
+        )
+        self.assertGreater(
+            float(reconciliation["source_record"]["match_time_delta_seconds"]),
+            2.0,
         )
 
     def test_mismatched_sidecar_does_not_promote_candidate(self):

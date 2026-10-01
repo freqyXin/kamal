@@ -20,6 +20,7 @@ NORDIC_CONNECT_REQ_SIDECAR_VERSION = "0.12.0"
 DEFAULT_MATCH_WINDOW_SECONDS = Decimal("2.0")
 
 _ADDRESS_OCTET_RE = re.compile(r"^[0-9A-Fa-f]{1,2}$")
+_PACKET_COUNTER_RE = re.compile(r"\bpacket_counter:\s*(?P<packet_counter>\d+)\b")
 _CONNECT_REQ_RE = re.compile(
     r"ADV_TYPE_CONNECT_REQ.*?"
     r"initiator_address: BleAddress\((?P<initiator>[0-9A-Fa-f:]+) "
@@ -86,6 +87,14 @@ def _field_uint(value, field, *, bits):
     if parsed < 0 or parsed > (2**bits - 1):
         raise BLENordicSidecarError(f"{field} must fit in {bits} unsigned bits")
     return parsed
+
+
+def _optional_field_uint(value, field, *, bits):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return _field_uint(value, field, bits=bits)
 
 
 def _field_bool(value, field):
@@ -164,6 +173,17 @@ def load_nordic_connect_req_sidecar(path):
             if match is None:
                 continue
             values = match.groupdict()
+            packet_counter_match = _PACKET_COUNTER_RE.search(line)
+            packet_counter = (
+                None
+                if packet_counter_match is None
+                else _bounded_int(
+                    packet_counter_match.group("packet_counter"),
+                    "native packet_counter",
+                    minimum=0,
+                    maximum=2**32 - 1,
+                )
+            )
 
             initiator = _address(values["initiator"], "native initiator")
             advertiser = _address(values["advertiser"], "native advertiser")
@@ -241,6 +261,7 @@ def load_nordic_connect_req_sidecar(path):
             record = {
                 "timestamp_epoch": format(timestamp, "f"),
                 "line_number": line_number,
+                "packet_counter": packet_counter,
                 "initiator": initiator,
                 "initiator_type": values["initiator_type"],
                 "advertiser": advertiser,
@@ -307,10 +328,14 @@ def reconcile_connect_ind_fields(
 ):
     """Return a copy with only channel map, Hop, and SCA supplemented.
 
-    Matching requires address/type, access address, CRCInit, transmit-window,
-    interval, latency, and timeout agreement. Among exact matches, the nearest
-    native timestamp inside ``max_time_delta`` is selected; a tied nearest match
-    fails closed.
+    Matching always requires address/type, access address, CRCInit,
+    transmit-window, interval, latency, and timeout agreement.
+
+    When both the PCAP candidate and native sidecar expose a Nordic packet
+    counter, exact packet-counter equality is the primary same-packet binding
+    and timestamp delta is retained only as diagnostic metadata. If either side
+    lacks packet-counter metadata, the original nearest-timestamp matching
+    inside ``max_time_delta`` is retained. Ambiguous matches fail closed.
     """
 
     if not isinstance(fields, Mapping):
@@ -323,6 +348,11 @@ def reconcile_connect_ind_fields(
         raise BLENordicSidecarError("max_time_delta must be greater than zero")
 
     timestamp = _decimal_epoch(fields.get("frame.time_epoch"), "frame.time_epoch")
+    packet_counter = _optional_field_uint(
+        fields.get("nordic_ble.packet_counter"),
+        "nordic_ble.packet_counter",
+        bits=32,
+    )
     initiator = _address(fields.get("btle.initiator_address"), "initiator")
     advertiser = _address(fields.get("btle.advertising_address"), "advertiser")
     initiator_type = (
@@ -380,7 +410,7 @@ def reconcile_connect_ind_fields(
         ),
     }
 
-    matches = []
+    shared_matches = []
     for record in records:
         if not isinstance(record, Mapping):
             continue
@@ -394,26 +424,73 @@ def reconcile_connect_ind_fields(
             continue
         if any(record.get(name) != value for name, value in shared.items()):
             continue
-        record_time = _decimal_epoch(
-            record.get("timestamp_epoch"),
-            "native timestamp_epoch",
-        )
-        delta = abs(record_time - timestamp)
-        if delta <= max_time_delta:
-            matches.append((delta, record))
+        shared_matches.append(record)
 
-    if not matches:
+    if not shared_matches:
         raise BLENordicSidecarError(
             "no Nordic native CONNECT_REQ matches the PCAP candidate"
         )
 
-    matches.sort(key=lambda item: item[0])
-    if len(matches) > 1 and matches[0][0] == matches[1][0]:
-        raise BLENordicSidecarError(
-            "Nordic native CONNECT_REQ match is timestamp-ambiguous"
-        )
+    selected = None
+    match_method = None
 
-    delta, selected = matches[0]
+    if packet_counter is not None:
+        counter_capable = [
+            record
+            for record in shared_matches
+            if record.get("packet_counter") is not None
+        ]
+        if counter_capable:
+            counter_matches = [
+                record
+                for record in counter_capable
+                if record.get("packet_counter") == packet_counter
+            ]
+            if not counter_matches:
+                raise BLENordicSidecarError(
+                    "no Nordic native CONNECT_REQ packet-counter match "
+                    "for the PCAP candidate"
+                )
+            if len(counter_matches) > 1:
+                raise BLENordicSidecarError(
+                    "Nordic native CONNECT_REQ packet-counter match is ambiguous"
+                )
+            selected = counter_matches[0]
+            match_method = "packet_counter"
+
+    if selected is None:
+        timestamp_matches = []
+        for record in shared_matches:
+            record_time = _decimal_epoch(
+                record.get("timestamp_epoch"),
+                "native timestamp_epoch",
+            )
+            delta = abs(record_time - timestamp)
+            if delta <= max_time_delta:
+                timestamp_matches.append((delta, record))
+
+        if not timestamp_matches:
+            raise BLENordicSidecarError(
+                "no Nordic native CONNECT_REQ matches the PCAP candidate"
+            )
+
+        timestamp_matches.sort(key=lambda item: item[0])
+        if (
+            len(timestamp_matches) > 1
+            and timestamp_matches[0][0] == timestamp_matches[1][0]
+        ):
+            raise BLENordicSidecarError(
+                "Nordic native CONNECT_REQ match is timestamp-ambiguous"
+            )
+        selected = timestamp_matches[0][1]
+        match_method = "timestamp"
+
+    selected_time = _decimal_epoch(
+        selected.get("timestamp_epoch"),
+        "native timestamp_epoch",
+    )
+    delta = abs(selected_time - timestamp)
+
     reconciled = dict(fields)
     supplemented = {
         "btle.link_layer_data.channel_map": selected["channel_map_hex"],
@@ -425,26 +502,33 @@ def reconcile_connect_ind_fields(
     original = {name: fields.get(name) for name in supplemented}
     reconciled.update(supplemented)
 
+    matched_fields = [
+        "initiator_address",
+        "initiator_address_type",
+        "advertiser_address",
+        "advertiser_address_type",
+        "access_address",
+        "crc_init",
+        "window_size",
+        "window_offset",
+        "interval",
+        "latency",
+        "timeout",
+    ]
+    if match_method == "packet_counter":
+        matched_fields.append("nordic_packet_counter")
+
     return reconciled, {
         "status": "nordic_native_sidecar_reconciliation",
         "source_record": {
             "line_number": selected["line_number"],
             "timestamp_epoch": selected["timestamp_epoch"],
+            "packet_counter": selected.get("packet_counter"),
+            "pcap_packet_counter": packet_counter,
+            "match_method": match_method,
             "match_time_delta_seconds": format(delta, "f"),
         },
-        "matched_fields": [
-            "initiator_address",
-            "initiator_address_type",
-            "advertiser_address",
-            "advertiser_address_type",
-            "access_address",
-            "crc_init",
-            "window_size",
-            "window_offset",
-            "interval",
-            "latency",
-            "timeout",
-        ],
+        "matched_fields": matched_fields,
         "supplemented_fields": {
             name: {
                 "pcap_decoded": original[name],
@@ -454,6 +538,8 @@ def reconcile_connect_ind_fields(
         },
         "policy": (
             "only channel_map, hop, and sleep_clock_accuracy may be supplemented; "
-            "shared connection identity/timing fields must match"
+            "shared connection identity/timing fields must match; exact Nordic "
+            "packet-counter equality is preferred when both representations "
+            "expose it, otherwise bounded timestamp matching is retained"
         ),
     }

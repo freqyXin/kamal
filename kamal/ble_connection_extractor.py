@@ -31,6 +31,11 @@ BLE_CONNECTION_EXTRACTION_VERSION = "0.12.0"
 CONNECT_IND_DISPLAY_FILTER = (
     f"btle.advertising_header.pdu_type == {LEGACY_CONNECT_IND_PDU_TYPE}"
 )
+CONNECT_IND_EXTRACTOR_TSHARK_FIELDS = (
+    *CONNECT_IND_TSHARK_FIELDS[:4],
+    "nordic_ble.packet_counter",
+    *CONNECT_IND_TSHARK_FIELDS[4:],
+)
 
 
 class BLEConnectionExtractionError(ValueError):
@@ -84,7 +89,7 @@ def _tshark_version(runner, tshark):
     return first_line[0].strip()
 
 
-def _candidate_command(tshark, pcap_path):
+def _candidate_command(tshark, pcap_path, fields):
     command = [
         str(tshark),
         "-r",
@@ -98,7 +103,7 @@ def _candidate_command(tshark, pcap_path):
         "-E",
         "occurrence=f",
     ]
-    for field in CONNECT_IND_TSHARK_FIELDS:
+    for field in fields:
         command.extend(["-e", field])
     return command
 
@@ -146,9 +151,14 @@ def extract_legacy_connect_ind_report(
         except BLENordicSidecarError as exc:
             raise BLEConnectionExtractionError(str(exc)) from exc
 
+    decoder_fields = (
+        CONNECT_IND_EXTRACTOR_TSHARK_FIELDS
+        if sidecar is not None
+        else CONNECT_IND_TSHARK_FIELDS
+    )
     result = _run_tshark(
         runner,
-        _candidate_command(tshark, source),
+        _candidate_command(tshark, source, decoder_fields),
     )
 
     accepted = []
@@ -162,20 +172,20 @@ def extract_legacy_connect_ind_report(
         candidate_count += 1
         columns = raw_line.split("\t")
 
-        if len(columns) != len(CONNECT_IND_TSHARK_FIELDS):
+        if len(columns) != len(decoder_fields):
             rejected.append(
                 {
                     "frame_number": columns[0].strip() if columns else None,
                     "reason": (
                         "decoder field-count mismatch: "
-                        f"expected {len(CONNECT_IND_TSHARK_FIELDS)}, "
+                        f"expected {len(decoder_fields)}, "
                         f"received {len(columns)}"
                     ),
                 }
             )
             continue
 
-        fields = dict(zip(CONNECT_IND_TSHARK_FIELDS, columns))
+        fields = dict(zip(decoder_fields, columns))
         frame_number = fields.get("frame.number")
         frame_number = frame_number.strip() if isinstance(frame_number, str) else None
 
@@ -250,7 +260,7 @@ def extract_legacy_connect_ind_report(
             "tool": "tshark",
             "version": decoder_version,
             "display_filter": CONNECT_IND_DISPLAY_FILTER,
-            "fields": list(CONNECT_IND_TSHARK_FIELDS),
+            "fields": list(decoder_fields),
         },
         "summary": {
             "candidate_count": candidate_count,

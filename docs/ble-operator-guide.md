@@ -139,7 +139,7 @@ bin/kamal-capture ble-adv3 \
 
 The output directory contains three separate PCAPs, per-radio logs, follow-request markers, and `manifest.json`. K’amal intentionally keeps the PCAPs separate. A follow-request marker proves that the host sent the follow request; it does **not** prove RF acquisition of the target.
 
-Current validated behavior pins the primary advertising channels 37, 38, and 39. It does not imply arbitrary fixed data-channel support.
+Current supported operator behavior pins the primary advertising channels 37, 38, and 39. Separately, the dedicated receive-only DATA firmware prototype has been hardware-validated for manual fixed LE1M reception on representative CH0, CH18, and CH36 using fresh provenance-bound access-address/CRCInit inputs and matching CRC-valid packets. That prototype HIL does **not** make `ble-adv3` a data-channel capture mode and is not yet exposed as a supported operator workflow; the test DATA receiver was restored to stock Nordic firmware after validation.
 
 ### Inventory an existing PCAP
 
@@ -315,7 +315,7 @@ Raw Bluetooth keys and client-sensitive captures are not ordinary console/report
 ## 9. Current limitations that operators must know
 
 - Python command entrypoints are not yet packaged to guarantee the project venv automatically; use `.venv/bin/python` as shown above.
-- The three-channel fixed observation plane covers primary advertising channels 37–39. Arbitrary fixed data-channel reception is current research, not a supported capability.
+- The three-channel fixed observation plane covers primary advertising channels 37–39. A separate custom receive-only firmware path has representative CH0/CH18/CH36 hardware evidence, but arbitrary fixed data-channel reception is not yet a supported operator-facing capability: there is no stable CLI/job contract for it, the DATA dongle is normally restored to stock firmware, and scheduler-grade anchor/event-counter/CSA handling remains incomplete.
 - The explicit pairing executor is implemented, but the current controlled `go dawgs` HIL attempt returned `AuthenticationFailed`; do not interpret implementation as proof that every target can be paired.
 - Key-aware OTA decryption/correlation, live IRK/RPA execution, bond reset/removal, and a successful positive-write HIL remain incomplete.
 - The operator control UI is a future goal. The CLI/contracts remain the current authoritative execution surface.

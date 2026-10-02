@@ -63,6 +63,21 @@ assessed offline. A transport-level ATT/GATT success response is evidence of a
 successful protocol operation, not proof that an application-level state change
 occurred.
 
+### Keep receiver-control validation separate from executable scheduling
+
+Dedicated BLE data-channel receiver control may be hardware-validated as a
+separate capability without making dynamic scheduling supported. Representative
+manual control evidence must retain the commanded channel, access address,
+CRCInit, receiver identity, cleanup result, immutable establishment provenance,
+and at least one matching CRC-valid packet. A receiver-control HIL result does
+not authorize the scheduler to infer or invent a data-channel anchor, connection
+event counter, channel-selection algorithm, or lossless reconstruction.
+
+The current representative CH0/CH18/CH36 HIL satisfies the hardware-control
+prerequisite for the tested LE1M path. A future scheduler integration must still
+define a persisted control-evidence contract and independently validate the
+timing/event/CSA inputs required for executable assignments.
+
 ### Use atomic no-overwrite persistence for immutable assessment artifacts
 
 Survey checkpoints may legitimately use replace semantics. Assessments and
